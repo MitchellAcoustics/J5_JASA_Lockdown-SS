@@ -1,0 +1,408 @@
+---
+title: "London-lockdown feature selection - Overall"
+author: "Andrew Mitchell"
+date: "11/08/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load data
+
+```{r load data, results='hide', message=FALSE, warning=FALSE}
+library(here)
+library(dplyr)
+library(readxl)
+library(MASS)
+library(caret)
+library(car)
+library(olsrr) 
+library(glue) 
+library(lmerTest)
+library(MuMIn)
+
+# ssid.data <- read_excel(here("Data", "2020-04-21", "AllLondon_combined_200421.xlsx"))
+ssid.data <- read.csv(here("data", "2020-08-13", "LondonVeniceBINResults_2020-08-13_4.csv"))
+# ssid.data$Natural = ordered(ssid.data$Natural, levels=c("1", "2", "3", "4", "5"))
+# ssid.data$overall = ordered(ssid.data$overall, levels=c("1", "2", "3", "4", "5"))
+
+# Set GroupID, SessionID, Location as factor type
+ssid.data <- ssid.data %>% mutate_at(vars(GroupID, SessionID, LocationID,
+                                          Lockdown),
+                                     funs(as.factor))
+ssid.data <- ssid.data %>% mutate_at(vars(Natural, overall, Pleasant,
+                                          Eventful),
+                                     funs(as.numeric))
+##################################################################
+```
+
+For our starting acoustic variables, I need to cut it down to start. First, I'm removing all of the psychoacoustic_min variables.
+I'll also remove the THD_freq features. The SII is not designed for environmental sound, so we'll remove it. The LCeq_LAeq and LA10_LA90 have been producing terrible collinearity issues, so we'll remove them up front.
+
+```{r}
+acoustic_vars = c("FS", "FS_5", "FS_10", "FS_50", "FS_90", "FS_95", "FS_Min", "FS_Max", "FS_5.FS_95", "FS_10.FS_90", "FS_Max.FS_Min", "LAeq", "LAeq_5", "LAeq_10", "LAeq_50", "LAeq_90", "LAeq_95", "LAeq_Max", "LAeq_Min", "LAeq_10.LAeq_90", "LAeq_5.LAeq_95", "LAeq_Max.LAeq_Min", "N_5", "N_10", "N_50", "N_90", "N_95", "N_Min", "N_Max", "N_5.N_95", "N_10.N_90", "N_Max.N_Min", "R", "R_5", "R_10", "R_50", "R_90", "R_95", "R_Min", "R_Max", "R_5.R_95", "R_10.R_90", "R_Max.R_Min", "S", "S_5", "S_10", "S_50", "S_90", "S_95", "S_Min", "S_Max", "S_5.S_95", "S_10.S_90", "S_Max.S_Min", "SIL_5", "SIL_10", "SIL_50", "SIL_90", "SIL_95", "SIL_Min", "SIL_Max", "SIL_5.SIL_95", "SIL_10.SIL_90", "SIL_Max.SIL_Min", "T_5", "T_10", "T_50", "T_90", "T_95", "T_Max", "T_5.T_95", "T_10.T_90", "SpectralCentroid", "MaxFreq", "PeakSpectralCentroid", "PeakMaxFreq", "I", "I_5", "I_10", "I_50", "I_90", "I_95", "I_Min", "I_Max", "I_5.I_95", "I_10.I_90", "I_Max.I_Min", "LCeq", "LCeq_5", "LCeq_10", "LCeq_50", "LCeq_90", "LCeq_95", "LCeq_Min", "LCeq_Max", "LCeq_5.LCeq_95", "LCeq_10.LCeq_90", "LCeq_Max.LCeq_Min",  "LZeq", "LZeq_5", "LZeq_10", "LZeq_50", "LZeq_90", "LZeq_95", "LZeq_Min", "LZeq_Max", "LZeq_5.LZeq_95", "LZeq_10.LZeq_90", "LZeq_Max.LZeq_Min",  "THD_5", "THD_10", "THD_50", "THD_90", "THD_95", "THD_Min", "THD_Max", "THD_5.THD_95","THD_10.THD_90","THD_Max.THD_Min")
+
+# "FS_M0", "FS_nrmse0", "LAeq_M0", "LAeq_nrmse0", "N_M0", "N_nrmse0", "N_M1", "N_nrmse1", "N_M2", "N_nrmse2", "R_M0", "R_nrmse0", "S_M0", "S_nrmse0", "S_M1", "S_nrmse1", "S_M2", "S_nrmse2", "SIL_M0", "SIL_nrmse0", "T_M0", "T_nrmse0"
+
+dep_vars = c("Natural", "overall", "Pleasant", "Eventful")
+
+# Cutdown the dataset
+ssid.data <- ssid.data[c("GroupID", "LocationID", "Lockdown", dep_vars, acoustic_vars)]
+
+london.compress <- ssid.data %>% 
+    group_by(GroupID) %>%
+    summarize_at(.vars = c(dep_vars, acoustic_vars), mean)
+
+london.compress['LocationID'] <- unique(ssid.data[c('GroupID', 'LocationID')])['LocationID']
+london.compress['Lockdown'] <- unique(ssid.data[c('GroupID', 'Lockdown')])['Lockdown']
+
+# Standardise
+london.compress <- london.compress %>%
+    mutate_at(acoustic_vars, ~(scale(.) %>% as.vector))
+
+head(london.compress)
+
+# Split the dataset according to its lockdown status
+dataframes <- split(london.compress, london.compress$Lockdown)
+prelockdown.data <- dataframes[[1]]
+lockdown.data <- dataframes[[2]]
+
+# # cut down the data set
+prelockdown.data <- data.frame(na.omit(prelockdown.data))
+
+
+```
+
+## Feature selection for 'overall' model
+
+First we need to apply a filter for the repeated features - i.e. determine which of each type of psychoacoustic feature to include. For example, for Loudness, we have the 7 statistical features and 3 variation features. We know we won't be including all, or even more than one, of each of these, so we should start by cutting out the redundant ones.
+
+To do this we need to calculate some sort of simple prediction accuracy metric for each individual feature to the output variable. If output is categorical, I recommend AUC.
+
+### Filtering features
+```{r}
+max_corr <- function(feature_list, target_variable, data) {
+    cor_table <- cor(data[feature_list], data[target_variable])
+    max_feature <- rownames(cor_table)[which.max(abs(cor_table))]
+    max_value <- cor_table[which.max(abs(cor_table))]
+    results <- c(max_feature, max_value)
+    results
+}
+
+FS_stats <- c("FS", "FS_5", "FS_10", "FS_50", "FS_90", "FS_95", "FS_Min", "FS_Max")
+FS_variation <- c("FS_5.FS_95", "FS_10.FS_90", "FS_Max.FS_Min")
+LAeq_stats <- c("LAeq", "LAeq_5", "LAeq_10", "LAeq_50", "LAeq_90", "LAeq_95", "LAeq_Max", "LAeq_Min")
+LAeq_variation <- c("LAeq_10.LAeq_90", "LAeq_5.LAeq_95", "LAeq_Max.LAeq_Min")
+N_stats <- c("N_5", "N_10", "N_50", "N_90", "N_95", "N_Min", "N_Max")
+N_variation <- c("N_5.N_95", "N_10.N_90", "N_Max.N_Min")
+R_stats <- c("R", "R_5", "R_10", "R_50", "R_90", "R_95", "R_Min", "R_Max")
+R_variation <- c("R_5.R_95", "R_10.R_90", "R_Max.R_Min")
+S_stats <- c("S", "S_5", "S_10", "S_50", "S_90", "S_95", "S_Min", "S_Max")
+S_variation <- c("S_5.S_95", "S_10.S_90", "S_Max.S_Min")
+SIL_stats <- c("SIL_5", "SIL_10", "SIL_50", "SIL_90", "SIL_95", "SIL_Min", "SIL_Max")
+SIL_variation <- c("SIL_5.SIL_95", "SIL_10.SIL_90", "SIL_Max.SIL_Min")
+T_stats <- c("T_5", "T_10", "T_50", "T_90", "T_95", "T_Max")
+T_variation <- c("T_5.T_95", "T_10.T_90")
+I_stats <- c("I","I_5","I_10","I_50","I_90","I_95","I_Min","I_Max")
+I_variation <- c("I_5.I_95","I_10.I_90","I_Max.I_Min")
+LCeq_stats <- c("LCeq","LCeq_5","LCeq_10","LCeq_50","LCeq_90","LCeq_95","LCeq_Min","LCeq_Max")
+LCeq_variation <- c("LCeq_5.LCeq_95","LCeq_10.LCeq_90","LCeq_Max.LCeq_Min")
+LZeq_stats <- c("LZeq","LZeq_5","LZeq_10","LZeq_50","LZeq_90","LZeq_95","LZeq_Min","LZeq_Max")
+LZeq_variation <- c("LZeq_5.LZeq_95","LZeq_10.LZeq_90","LZeq_Max.LZeq_Min")
+THD_stats <- c("THD_5","THD_10","THD_50","THD_90","THD_95","THD_Min","THD_Max")
+THD_variation <- c("THD_5.THD_95","THD_10.THD_90","THD_Max.THD_Min")
+frequency_features <- c("SpectralCentroid", "MaxFreq", "PeakSpectralCentroid", "PeakMaxFreq")
+
+all_features <- list(FS_stats, FS_variation, LAeq_stats, LAeq_variation, N_stats, N_variation, R_stats, R_variation, S_stats, S_variation, SIL_stats, SIL_variation, T_stats, T_variation, I_stats, I_variation, LCeq_stats, LCeq_variation, LZeq_stats, LZeq_variation, THD_stats, THD_variation, frequency_features)
+
+for(item in all_features) {
+    results <- max_corr(item, "overall", prelockdown.data)
+    print(results)
+}
+
+
+```
+
+So our new, filtered feature set will be:
+
+```{r}
+overall.features <- c("FS_90", "FS_Max.FS_Min", "LAeq_5", "LAeq_10.LAeq_90", "LCeq_5", "LCeq_5.LCeq_95", "LZeq_50", "LZeq_5.LZeq_95", "N_5", "N_10.N_90", "R_95", "R_10.R_90", "S_Max", "S_Max.S_Min", "SIL_5", "SIL_5.SIL_95", "T_50", "T_10.T_90", "I_90", "I_5.I_95", "THD_Max", "THD_5.THD_95", "SpectralCentroid", "MaxFreq", "PeakSpectralCentroid", "PeakMaxFreq")
+
+mlm.overall <- lmer(overall ~ FS_90 + FS_Max.FS_Min + LAeq_5 + LAeq_10.LAeq_90 + LCeq_5 + LCeq_5.LCeq_95 + LZeq_50 + LZeq_5.LZeq_95 + N_5 + N_10.N_90 + R_95 + R_10.R_90 + S_Max + S_Max.S_Min + SIL_5 + SIL_5.SIL_95 + T_50 + T_10.T_90 + I_90 + I_5.I_95 + THD_Max + THD_5.THD_95 + SpectralCentroid + MaxFreq + PeakSpectralCentroid + PeakMaxFreq + (1|LocationID), data = prelockdown.data)
+
+stepMod <- lmerTest::step(mlm.overall)
+stepMod
+selected.mod <- get_model(stepMod)
+summary(selected.mod)
+r.squaredGLMM(selected.mod)
+```
+
+```{r}
+vif(selected.mod, data = prelockdown.data)
+```
+
+LAeq_5 and SIL_5 have a high VIF. Try removing LAeq_5
+
+```{r}
+selected.mod <- lmer(overall ~ FS_Max.FS_Min + N_5 + S_Max + S_Max.S_Min + SIL_5 + THD_Max + (1|LocationID), data = prelockdown.data)
+
+summary(selected.mod)
+r.squaredGLMM(selected.mod)
+vif(selected.mod, data = prelockdown.data)
+
+```
+
+
+
+## Checking prediction behaviour
+
+```{r}
+prelockdown.data$overall.pred <- predict(selected.mod, newdata = prelockdown.data)
+ggplot(prelockdown.data, aes(x=overall, y=overall.pred)) + geom_point() +
+    geom_smooth(method=lm)
+cor(prelockdown.data$overall, prelockdown.data$overall.pred)
+cor(prelockdown.data$overall, prelockdown.data$overall.pred)^2
+var(prelockdown.data$overall, prelockdown.data$overall.pred)
+
+```
+
+```{r}
+ggplot(prelockdown.data, aes(x = overall, color=LocationID)) + 
+    geom_density(bw=.5)
+
+ggplot(prelockdown.data, aes(x = overall.pred, color=LocationID)) + 
+    geom_density(bw=.5)
+```
+
+```{r}
+lockdown.data$overall.pred <- predict(selected.mod, newdata = lockdown.data)
+ggplot(lockdown.data, aes(x = overall.pred, color=LocationID)) + 
+    geom_density(bw=.5)
+```
+
+# Model for `Natural`
+
+
+### Filtering features
+```{r}
+all_features <- list(FS_stats, FS_variation, LAeq_stats, LAeq_variation, LCeq_stats, LCeq_variation, LZeq_stats, LZeq_variation, N_stats, N_variation, R_stats, R_variation, S_stats, S_variation, SIL_stats, SIL_variation, T_stats, T_variation, I_stats, I_variation, THD_stats, THD_variation, frequency_features) 
+
+for(item in all_features) {
+    results <- max_corr(item, "Natural", prelockdown.data)
+    print(results)
+}
+
+
+```
+
+So our new, filtered feature set will be:
+
+```{r}
+Natural.features <- c("FS_95", "FS_Max.FS_Min", "LAeq_Max", "LAeq_5.LAeq_95", "LCeq_5", "LCeq_10.LCeq_90", "LZeq_5", "LZeq_5.LZeq_95", "N_Max", "N_5.N_95", "R_95", "R_5.R_95", "S_Min", "S_Max.S_Min", "SIL_Max", "SIL_5.SIL_95", "T_50", "T_10.T_90", "I_95", "I_5.I_95", "THD_Max", "THD_5.THD_95", "SpectralCentroid")
+
+mlm.Natural <- lmer(Natural ~ FS_95 + FS_Max.FS_Min + LAeq_Max + LAeq_5.LAeq_95 + LCeq_5 + LCeq_10.LCeq_90 + LZeq_5 + LZeq_5.LZeq_95 + N_Max + N_5.N_95 + R_95 + R_5.R_95 + S_Min + S_Max.S_Min + SIL_Max + SIL_5.SIL_95 + T_50 + T_10.T_90 + I_95 + I_5.I_95 + THD_Max + THD_5.THD_95 + SpectralCentroid + MaxFreq + PeakSpectralCentroid + PeakMaxFreq + (1|LocationID), data = prelockdown.data)
+
+stepMod <- lmerTest::step(mlm.Natural)
+stepMod
+selected.mod <- get_model(stepMod)
+summary(selected.mod)
+r.squaredGLMM(selected.mod)
+
+```
+
+```{r}
+vif(selected.mod, data = prelockdown.data)
+```
+
+
+## Checking prediction behaviour
+
+```{r}
+prelockdown.data$Natural.pred <- predict(selected.mod, newdata = prelockdown.data)
+ggplot(prelockdown.data, aes(x=Natural, y=Natural.pred)) + geom_point() +
+    geom_smooth(method=lm)
+cor(prelockdown.data$Natural, prelockdown.data$Natural.pred)
+cor(prelockdown.data$Natural, prelockdown.data$Natural.pred)^2
+
+var(prelockdown.data$Natural, prelockdown.data$Natural.pred)
+
+```
+
+```{r}
+ggplot(prelockdown.data, aes(x = Natural, color=LocationID)) + 
+    geom_density(bw=.5)
+
+ggplot(prelockdown.data, aes(x = Natural.pred, color=LocationID)) + 
+    geom_density(bw=.5)
+```
+
+```{r}
+lockdown.data$Natural.pred <- predict(selected.mod, newdata = lockdown.data)
+ggplot(lockdown.data, aes(x = Natural.pred, color=LocationID)) + 
+    geom_density(bw=.5)
+```
+
+
+```{r}
+
+ggplot(prelockdown.data, aes(x=LocationID, y=Natural)) +
+    geom_boxplot()
+ggplot(prelockdown.data, aes(x=LocationID, y=Natural.pred)) +
+    geom_boxplot()
+
+ggplot(lockdown.data, aes(x=LocationID, y=Natural.pred)) +
+    geom_boxplot()
+```
+
+
+# Model for `Pleasant`
+
+
+### Filtering features
+```{r}
+all_features <- list(FS_stats, FS_variation, LAeq_stats, LAeq_variation, LCeq_stats, LCeq_variation, LZeq_stats, LZeq_variation, N_stats, N_variation, R_stats, R_variation, S_stats, S_variation, SIL_stats, SIL_variation, T_stats, T_variation, I_stats, I_variation, THD_stats, THD_variation, frequency_features) 
+
+for(item in all_features) {
+    results <- max_corr(item, "Pleasant", prelockdown.data)
+    print(results)
+}
+
+
+```
+
+So our new, filtered feature set will be:
+
+```{r}
+Pleasant.features <- c("FS_95", "FS_Max.FS_Min", "LAeq_Max", "LAeq_5.LAeq_95", "LCeq_5", "LCeq_10.LCeq_90", "LZeq_5", "LZeq_5.LZeq_95", "N_Max", "N_5.N_95", "R_95", "R_5.R_95", "S_Min", "S_Max.S_Min", "SIL_Max", "SIL_5.SIL_95", "T_50", "T_10.T_90", "I_95", "I_5.I_95", "THD_Max", "THD_5.THD_95", "SpectralCentroid")
+
+mlm.Pleasant <- lmer(Pleasant ~ FS_95 + FS_Max.FS_Min + LAeq_Max + LAeq_5.LAeq_95 + LCeq_5 + LCeq_10.LCeq_90 + LZeq_5 + LZeq_5.LZeq_95 + N_Max + N_5.N_95 + R_95 + R_5.R_95 + S_Min + S_Max.S_Min + SIL_Max + SIL_5.SIL_95 + T_50 + T_10.T_90 + I_95 + I_5.I_95 + THD_Max + THD_5.THD_95 + SpectralCentroid + MaxFreq + PeakSpectralCentroid + PeakMaxFreq + (1|LocationID), data = prelockdown.data)
+
+stepMod <- lmerTest::step(mlm.Pleasant)
+stepMod
+selected.mod <- get_model(stepMod)
+summary(selected.mod)
+r.squaredGLMM(selected.mod)
+
+```
+
+```{r}
+library(car)
+vif(selected.mod, data = prelockdown.data)
+```
+
+
+## Checking prediction behaviour
+
+```{r}
+prelockdown.data$Pleasant.pred <- predict(selected.mod, newdata = prelockdown.data)
+ggplot(prelockdown.data, aes(x=Pleasant, y=Pleasant.pred)) + geom_point() +
+    geom_smooth(method=lm)
+cor(prelockdown.data$Pleasant, prelockdown.data$Pleasant.pred)
+cor(prelockdown.data$Pleasant, prelockdown.data$Pleasant.pred)^2
+
+var(prelockdown.data$Pleasant, prelockdown.data$Pleasant.pred)
+
+```
+
+```{r}
+ggplot(prelockdown.data, aes(x = Pleasant, color=LocationID)) + 
+    geom_density()
+
+ggplot(prelockdown.data, aes(x = Pleasant.pred, color=LocationID)) + 
+    geom_density()
+```
+
+```{r}
+lockdown.data$Pleasant.pred <- predict(selected.mod, newdata = lockdown.data)
+ggplot(lockdown.data, aes(x = Pleasant.pred, color=LocationID)) + 
+    geom_density()
+```
+
+
+```{r}
+
+ggplot(prelockdown.data, aes(x=LocationID, y=Pleasant)) +
+    geom_boxplot()
+ggplot(prelockdown.data, aes(x=LocationID, y=Pleasant.pred)) +
+    geom_boxplot()
+
+ggplot(lockdown.data, aes(x=LocationID, y=Pleasant.pred)) +
+    geom_boxplot()
+```
+
+
+
+# Model for `Eventful`
+
+
+### Filtering features
+```{r}
+all_features <- list(FS_stats, FS_variation, LAeq_stats, LAeq_variation, LCeq_stats, LCeq_variation, LZeq_stats, LZeq_variation, N_stats, N_variation, R_stats, R_variation, S_stats, S_variation, SIL_stats, SIL_variation, T_stats, T_variation, I_stats, I_variation, THD_stats, THD_variation, frequency_features) 
+
+for(item in all_features) {
+    results <- max_corr(item, "Eventful", prelockdown.data)
+    print(results)
+}
+
+
+```
+
+So our new, filtered feature set will be:
+
+```{r}
+mlm.Eventful <- lmer(Eventful ~ FS_95 + FS_Max.FS_Min + LAeq_5 + LAeq_10.LAeq_90 + LCeq + LCeq_5.LCeq_95 + LZeq_95 + LZeq_5.LZeq_95 + N_5 + N_5.N_95 + R_90 + R_10.R_90 + S_Max + S_5.S_95 + SIL_5 + SIL_10.SIL_90 + T_50 + T_10.T_90 + I_95 + I_10.I_90 + THD_Max + THD_Max.THD_Min + SpectralCentroid + MaxFreq + PeakSpectralCentroid + PeakMaxFreq + (1|LocationID), data = prelockdown.data)
+
+stepMod <- lmerTest::step(mlm.Eventful)
+stepMod
+selected.mod <- get_model(stepMod)
+summary(selected.mod)
+r.squaredGLMM(selected.mod)
+
+```
+
+```{r}
+library(car)
+vif(selected.mod, data = prelockdown.data)
+```
+
+
+## Checking prediction behaviour
+
+```{r}
+prelockdown.data$Eventful.pred <- predict(selected.mod, newdata = prelockdown.data)
+ggplot(prelockdown.data, aes(x=Eventful, y=Eventful.pred)) + geom_point() +
+    geom_smooth(method=lm)
+cor(prelockdown.data$Eventful, prelockdown.data$Eventful.pred)
+cor(prelockdown.data$Eventful, prelockdown.data$Eventful.pred)^2
+
+var(prelockdown.data$Eventful, prelockdown.data$Eventful.pred)
+
+```
+
+```{r}
+ggplot(prelockdown.data, aes(x = Eventful, color=LocationID)) + 
+    geom_density()
+
+ggplot(prelockdown.data, aes(x = Eventful.pred, color=LocationID)) + 
+    geom_density()
+```
+
+```{r}
+lockdown.data$Eventful.pred <- predict(selected.mod, newdata = lockdown.data)
+ggplot(lockdown.data, aes(x = Eventful.pred, color=LocationID)) + 
+    geom_density()
+```
+
+
+```{r}
+
+ggplot(prelockdown.data, aes(x=LocationID, y=Eventful)) +
+    geom_boxplot()
+ggplot(prelockdown.data, aes(x=LocationID, y=Eventful.pred)) +
+    geom_boxplot()
+
+ggplot(lockdown.data, aes(x=LocationID, y=Eventful.pred)) +
+    geom_boxplot()
+```

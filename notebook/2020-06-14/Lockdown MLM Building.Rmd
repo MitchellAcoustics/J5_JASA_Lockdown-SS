@@ -1,0 +1,292 @@
+---
+title: "Lockdown MLM building"
+author: "Andrew Mitchell"
+date: "14/06/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+library(here)   # file path handline
+library(MASS)   # Modelling
+library(readxl)
+library(dplyr)  # piping
+library(glue)
+library(lmerTest)
+library(nlme)
+library(MuMIn)
+library(car)
+
+ssid.data <- read_excel(here("data", "2020-06-14", "2020-04-28_Pre-Lockdown-London_combined.xlsx"))
+
+# Set GroupID, SessionID, Location as factor type
+ssid.data <- ssid.data %>% mutate_at(vars(GroupID, SessionID, LocationID,
+                                          Lockdown),
+                                     funs(as.factor))
+ssid.data <- ssid.data %>% mutate_at(vars(Natural, overall, Pleasant,
+                                          Eventful),
+                                     funs(as.numeric))
+```
+
+For our starting acoustic variables, I need to cut it down to start. First, I'm removing all of the psychoacoustic_min variables.
+I'll also remove the THD_freq features. The SII is not designed for environmental sound, so we'll remove it. The LCeq_LAeq and LA10_LA90 have been producing terrible collinearity issues, so we'll remove them up front.
+
+```{r}
+acoustic_vars = c('LZeq', 'LCeq', 'LAeq', 'LAmax', 'LA_5', 'LA_10', 'LA_50', 'LA_90', 'N', 'Nmax', 'N5', 'N10', 'N50', 'N90', 'N95', 'R', 'Rmax', 'R5', 'R10', 'R50', 'R90', 'R95', 'S', 'S.1', 'Smax', 'S5', 'S10', 'S50', 'S90', 'S95', 'T', 'Tmax', 'T5', 'T10', 'T50', 'T90', 'T95', 'FS', 'FSmax', 'FS5', 'FS10', 'FS50', 'FS90', 'FS95', 'THD', 'THDmax', 'THD5', 'THD10', 'THD50', 'THD90', 'THD95', 'I', 'Imax', 'I5', 'I10', 'I50', 'I90', 'I95', 'SIL.rms.', 'SIL.av.', 'SILmin', 'SILmax', 'SIL5', 'SIL10', 'SIL50', 'SIL90', 'SIL95', 'LA5_LA95', 'SpectralCentroid', 'PeakSpectralCentroid', 'HighFreqAvg', 'PeakHighFreqAvg', 'FS_slope', 'THD_slope', 'I_slope', 'LA_slope', 'LZ_slope', 'N_slope', 'R_slope', 'S_slope', 'T_slope')
+
+dep_vars = c("Traffic", "Other", "Natural", "Human", "overall", "Pleasant", "Eventful")
+
+# # Standardise
+ssid.data <- ssid.data %>%
+    mutate_at(acoustic_vars, ~(scale(.) %>% as.vector))
+
+
+# Cutdown the dataset
+ssid.data <- ssid.data[c("GroupID", "LocationID", dep_vars, acoustic_vars)]
+
+london.compress <- ssid.data %>% 
+    group_by(GroupID) %>%
+    summarize_at(.vars = c(dep_vars, acoustic_vars), mean)
+
+london.compress['LocationID'] <- unique(ssid.data[c('GroupID', 'LocationID')])['LocationID']
+london.compress <- data.frame(na.omit(london.compress))
+
+# Global Mean Centering
+for(variable in acoustic_vars){
+    london.compress[variable] <- london.compress[variable] - mean(london.compress[[variable]])
+}
+
+# head(london.compress)
+
+```
+
+## Overall
+
+### Feature selection for 'overall' model
+
+```{r}
+o.all.mod <- as.formula("overall ~ LZeq + LCeq + LAeq + LAmax + LA_10 + LA_50 + LA_90 + N + Nmax + N10 + N50 + N90 + R + R5 + R10 + R50 + R90 + R95 + S + Smax + S10 + S50 + S90 + T + Tmax + T10 + T50 + T90 + FS + FSmax + FS10 + FS50 + FS90 + FS95 + THD + THDmax + THD10 + THD50 + THD90 + I + Imax + I5 + I10 + I50 + I90 + I95 + SIL.rms. + SIL10 + SIL50 + SIL90 + LA5_LA95 + SpectralCentroid + PeakSpectralCentroid + HighFreqAvg + PeakHighFreqAvg + FS_slope + THD_slope + I_slope + LA_slope + LZ_slope + N_slope + R_slope + S_slope + T_slope + (1|LocationID)")
+
+
+o.full.mod <- lmerTest::lmer(o.all.mod, data = london.compress)
+o.step.mod <- lmerTest::step(o.full.mod, direction = 'both', reduce.random=F)
+print(o.step.mod)
+
+```
+
+The selected model is:
+
+```{r}
+o.selected.mod <- get_model(o.step.mod)
+summary(o.selected.mod)
+r.squaredGLMM(o.selected.mod)
+
+```
+
+overall ~ LAeq + Nmax + R90 + Smax + FS90 + FS95 + I + I5 + SIL.rms. + FS_slope + N_slope + R_slope + S_slope + (1|LocationID)
+
+From here we can investigate more thorougly, starting with multicollinearity and VIF
+
+### Multicollinearity
+
+```{r}
+vif(o.selected.mod, data = london.compress)
+```
+
+LAeq, FS90, FS95, SIL.rms. all have VIF above 10
+
+Begin by removing:
+ * FS90
+ * SIL.rms.
+
+```{r}
+o.mod <- lmer(overall ~ LAeq + Nmax + R90 + Smax + FS95 + I + I5 + FS_slope + N_slope + R_slope + S_slope + (1|LocationID), data = london.compress)
+r.squaredGLMM(o.mod)
+vif(o.mod, data = london.compress)
+```
+
+No features have VIF > 10. The highest VIF features are the _slope features.
+
+
+### Predicting Overall responses and Checking prediction behaviour
+
+```{r}
+library(ggplot2)
+london.compress$overall.pred <- predict(o.mod, newdata = london.compress)
+ggplot(london.compress, aes(x=overall, y=overall.pred)) + geom_point() +
+    geom_smooth(method=lm)
+cor(london.compress$overall, london.compress$overall.pred)
+var(london.compress$overall, london.compress$overall.pred)
+print(summary(london.compress$overall))
+print(summary(london.compress$overall.pred))
+ggplot(london.compress, aes(x = overall, color=LocationID)) + 
+    geom_density()
+
+ggplot(london.compress, aes(x = overall.pred, color=LocationID)) + 
+    geom_density()
+```
+
+## Pleasant (complex)
+
+### Feature selection for Pleasant model
+
+```{r}
+p.all.mod <- as.formula("Pleasant ~ LZeq + LCeq + LAeq + LAmax + LA_10 + LA_50 + LA_90 + N + Nmax + N10 + N50 + N90 + R + R5 + R10 + R50 + R90 + R95 + S + Smax + S10 + S50 + S90 + T + Tmax + T10 + T50 + T90 + FS + FSmax + FS10 + FS50 + FS90 + FS95 + THD + THDmax + THD10 + THD50 + THD90 + I + Imax + I5 + I10 + I50 + I90 + I95 + SIL.rms. + SIL10 + SIL50 + SIL90 + LA5_LA95 + SpectralCentroid + PeakSpectralCentroid + HighFreqAvg + PeakHighFreqAvg + FS_slope + THD_slope + I_slope + LA_slope + LZ_slope + N_slope + R_slope + S_slope + T_slope + (1|LocationID)")
+
+p.full.mod <- lmerTest::lmer(p.all.mod, data = london.compress)
+p.step.mod <- lmerTest::step(p.full.mod, direction = "both", reduce.random = F)
+print(p.step.mod)
+
+```
+
+The Selected model is:
+
+```{r}
+p.selected.mod <- get_model(p.step.mod)
+summary(p.selected.mod)
+r.squaredGLMM(p.selected.mod)
+```
+
+Pleasant ~ LA_50 + R90 + FS10 + FS90 + FS95 + THDmax + I50 + SIL50
+
+### Multicollinearity
+
+```{r}
+vif(p.selected.mod, data = london.compress)
+```
+
+LA_50, FS90, FS95, SIL50 all have VIF > 10
+
+Remove: 
+ * FS90
+ * SIL50
+
+
+```{r}
+p.new.mod <- lmer(Pleasant ~ LA_50 + R90 + FS10 + FS95 + THDmax + I50 + (1|LocationID), data = london.compress)
+r.squaredGLMM(p.new.mod)
+vif(p.new.mod, data = london.compress)
+```
+ 
+No features have VIF > 10.
+
+### Predicting Pleasant responses and checking prediction behaviour
+
+```{r}
+london.compress$Pleasant.pred <- predict(p.new.mod, newdata = london.compress)
+ggplot(london.compress, aes(x=Pleasant, y=Pleasant.pred)) + geom_point() + 
+    geom_smooth(method=lm)
+cor(london.compress$Pleasant, london.compress$Pleasant.pred)
+var(london.compress$Pleasant, london.compress$Pleasant.pred)
+
+print(summary(london.compress$Pleasant))
+print(summary(london.compress$Pleasant.pred))
+
+ggplot(london.compress, aes(x = Pleasant, color=LocationID)) + 
+    geom_density()
+ggplot(london.compress, aes(x = Pleasant.pred, color = LocationID)) + 
+    geom_density()
+```
+
+## Eventful (complex)
+
+### Feature selection for Eventful model
+
+```{r}
+e.all.mod <- as.formula("Eventful ~ LZeq + LCeq + LAeq + LAmax + LA_10 + LA_50 + LA_90 + N + Nmax + N10 + N50 + N90 + R + R5 + R10 + R50 + R90 + R95 + S + Smax + S10 + S50 + S90 + T + Tmax + T10 + T50 + T90 + FS + FSmax + FS10 + FS50 + FS90 + FS95 + THD + THDmax + THD10 + THD50 + THD90 + I + Imax + I5 + I10 + I50 + I90 + I95 + SIL.rms. + SIL10 + SIL50 + SIL90 + LA5_LA95 + SpectralCentroid + PeakSpectralCentroid + HighFreqAvg + PeakHighFreqAvg + FS_slope + THD_slope + I_slope + LA_slope + LZ_slope + N_slope + R_slope + S_slope + T_slope + (1|LocationID)")
+
+e.full.mod <- lmerTest::lmer(e.all.mod, data = london.compress)
+e.step.mod <- lmerTest::step(e.full.mod, direction = "both", reduce.random = F)
+print(e.step.mod)
+
+```
+
+The Selected model is:
+
+```{r}
+e.selected.mod <- get_model(e.step.mod)
+summary(e.selected.mod)
+r.squaredGLMM(e.selected.mod)
+```
+
+Eventful ~ LA_90 + S + Smax + S50 + FS10 + THD + SIL10 + SIL90 + FS_slope + I_slope + R_slope + (1|LocationID)
+
+### Multicollinearity
+
+```{r}
+vif(e.selected.mod, data = london.compress)
+```
+
+LA_90, S, S50, SIL90 all have VIF > 10
+
+Remove: 
+ * SIL90
+ * S
+ * R_slope
+
+
+```{r}
+e.mod <- lmer(Eventful ~ LA_90 + Smax + S50 + FS10 + THD + SIL10 + FS_slope + I_slope + (1|LocationID), data = london.compress)
+r.squaredGLMM(e.mod)
+vif(e.mod, data = london.compress)
+```
+ 
+No features have VIF > 10.
+
+### Predicting Eventful responses and checking prediction behaviour
+
+```{r}
+london.compress$Eventful.pred <- predict(e.mod, newdata = london.compress)
+ggplot(london.compress, aes(x=Eventful, y=Eventful.pred)) + geom_point() + 
+    geom_smooth(method=lm)
+cor(london.compress$Eventful, london.compress$Eventful.pred)
+var(london.compress$Eventful, london.compress$Eventful.pred)
+
+print(summary(london.compress$Eventful))
+print(summary(london.compress$Eventful.pred))
+
+ggplot(london.compress, aes(x = Eventful, color=LocationID)) + 
+    geom_density()
+ggplot(london.compress, aes(x = Eventful.pred, color = LocationID)) + 
+    geom_density()
+```
+
+## Circumplex scatter plot
+
+```{r}
+theme_set(
+    theme_bw() +
+        theme(legend.position = "top")
+)
+
+# initiate a ggplot
+b <- ggplot(london.compress, aes(x = Pleasant, y = Eventful, color=LocationID))
+
+b + geom_point() + geom_rug()
+
+# Predicted scatterplot
+p <- ggplot(london.compress, aes(x = Pleasant.pred, y = Eventful.pred, color=LocationID))
+p + geom_point() + geom_rug()
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

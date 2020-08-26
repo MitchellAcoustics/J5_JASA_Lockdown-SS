@@ -1,0 +1,254 @@
+---
+title: "Lockdown Linear Model"
+author: "Andrew Mitchell"
+date: "23/04/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# IMPORTANT: This method has been disregarded. Tested and decided not worthwhile.
+
+Our goal is to predict the Likert scale response to two survey questions acout the soundscape, based on acoustic and psychoacoustic features recorded during the survey. The data was collected according to [*Mitchell et al., 2020*](https://www.mdpi.com/2076-3417/10/7/2397). The two questions we want to predict are:
+
+* `Natural`: To what extent do you presently hear Natural sounds? Not at all [1], A little [2], Moderately [3], A lot [4], Dominates completely [5].
+* `overall`: Overall, how would you describe the present surrounding sound environment? Very good [5], Good [4], Neither bad nor good [3], Bad [4], Very bad [5].
+
+Data were collected at 11 locations around London (coded as `LocationID`), typically over several sessions (coded as `SessionID`). In addition, recordings have been made during the COVID-19 lockdown which are equivalent to those made during the in-situ surveys made over 2018 and 2019. Based on a model built from the 2018-2019 data, we would like to predict how the responses would have changed during the lockdown, based on the new recordings made.
+
+For each survey response, we have a large set (~90) of acoustic features calculated from a 30s recording made while respondents were filling out the survey on site. Prior to this model building, feature selection was performed on these acoustic features. This was done through both-ways stepwise selection done on a linear regression model for each `Natural` and `overall` (using `ols_step_both_p` from `olsrr` package) which at the start included the full vector of acoustic features. The features selected by this process were then investigated for collinearity using the VIF and the features were further reduced to avoid collinearity. The final selected feature vectors are:
+
+* `Natural`: LZeq, S95, FS, T50
+* `overall`: FSmax, I5, THD90, N10, T5
+
+--
+
+* LZeq - linear equivalent level (dB)
+* N10 - Psychoacoustic Loudness, level exceeded 10% of the time
+* S95 - Sharpness, level exceeded 95% of the time
+* FS - Fluctuation Strength
+* FSmax - Max Fluctuation Strength over time of recording (~30s)
+* T50 - Tonality, level exceeded 50% of the time
+* T5 - Tonality, level exceeded 5% of the time
+* I5 - Impulsiveness
+* THD90 - Total Harmonic Distortion, level exceeded 90% of the time
+
+Note: for each of the statistical measures listed (i.e. N10), the base feature (i.e. Loudness (N)) were initially included, but were rejected during the feature selection process.
+
+Note: The feature selection models also included the LocationID as a factor. When this was excluded, there was little meaningful difference in the features selected for 'Natural' and 'overall'. Our reasoning for this is that when LocationID is not accounted for, the models are instead essentially identifying the differences between the locations, with the Naturalness and overall ratings as an indicator for location, as opposed to actually modelling changes in Naturalness and overall ratings. Given that the perception of a soundscape is highly dependent on the context (i.e. the location) it is important this is considered. 
+
+## Load data
+
+```{r load data, results='hide', message=FALSE, warning=FALSE, include=T}
+library(tidyverse)
+library(here)
+library(dplyr)
+library(readxl)
+library(glue)
+library(ggplot2)
+library(lme4)
+library(likert)
+
+# Don't need to worry about having _slope variables
+ssid.data <- read_excel(here("Data", "2020-04-21", "AllLondon_combined_200421.xlsx"))
+
+
+# ssid.data$Natural = ordered(ssid.data$Natural, levels=c("1", "2", "3", "4", "5"))
+ssid.data$Natural = as.numeric(ssid.data$Natural) # Not ordered
+
+# ssid.data$overall = ordered(ssid.data$overall, levels=c("1", "2", "3", "4", "5"))
+ssid.data$overall = as.numeric(ssid.data$overall)
+
+#############################################################
+
+# Set GroupID, SessionID, Location as factor type
+ssid.data <- ssid.data %>% mutate_at(vars(GroupID, SessionID, LocationID,
+                                          Lockdown),
+                                     funs(as.factor))
+
+
+overall.vars <- c('LCeq', 'R90', 'S50', 'THD90', 'PeakSpectralCentroid')
+Natural.vars <- c('N', 'R5', 'R90', 'S90', 'THDmax', 'I', 'PeakSpectralCentroid')
+
+indep.vars <- unique(c(overall.vars, Natural.vars))
+dep.vars = c("Natural", "overall")
+
+# Cutdown the dataset
+ssid. <- ssid.data[c("GroupID", "SessionID", "LocationID", "Lockdown", dep.vars, indep.vars)]
+
+# Standardise
+ssid.data <- ssid.data %>%
+    mutate_at(indep.vars, ~(scale(.) %>% as.vector))
+
+# Split the dataset according to its lockdown status
+dataframes <- split(ssid.data, ssid.data$Lockdown)
+london.data <- dataframes[[1]]
+lockdown.data <- dataframes[[2]]
+
+## cut down the data set
+london.data <- data.frame(na.omit(london.data[c("GroupID", "SessionID", "LocationID", dep.vars, indep.vars)]))
+lockdown.data <- data.frame(na.omit(lockdown.data[c("GroupID", "SessionID", "LocationID", indep.vars)]))
+
+# Split into training and test datasets
+trainingRows <- sample(1:nrow(london.data), 0.7 * nrow(london.data))
+trainingData <- london.data[trainingRows, ]
+testData <- london.data[-trainingRows, ]
+```
+
+
+# Natural model
+
+Build a model for predicting the Natural rating. `Natural ~ LocationID + N + R5 + R90 + S90 + THDmax + I + PeakSpectralCentroid`
+
+```{r, include=T, fig.height=9, fig.width=9}
+library(lmerTest)
+library(psycho)
+Natural.formula <- paste(glue("Natural ~ "), paste(c(Natural.vars), collapse=" + "))
+lm.Natural <- lm(Natural ~ LocationID + N + R5 + R90 + S90 + THDmax + I + PeakSpectralCentroid, data = london.data)
+summary(lm.Natural)
+
+# Predict and test
+london.data$Natural.pred <- round(predict.lm(lm.Natural, london.data, type ="response"), 0)
+london.data$Natural.pred <- ordered(london.data$Natural.pred, levels=c("1", "2", "3", "4", "5"))
+
+table(london.data$Natural, london.data$Natural.pred)
+
+misClassificationError <- mean(as.character(london.data$Natural) != as.character(london.data$Natural.pred), na.rm=T)
+(accuracy <- (1 - misClassificationError) * 100)
+
+# Predict on Lockdown data
+lockdown.data$Natural.pred <- round(predict(lm.Natural, lockdown.data, type="response"), 0)
+lockdown.data$Natural.pred <- ordered(lockdown.data$Natural.pred, levels=c("1", "2", "3", "4", "5"))
+
+```
+
+# overall
+Build a model for predicting the overall quality `overall ~ LocationID + LCeq + R90 + S50 + THD90 + PeakSpectralCentroid`
+
+```{r, include=T, fig.height=9, fig.width=9}
+overall.Formula <- paste(glue("overall ~ "), paste(c("LocationID", overall.vars), collapse=" + "))
+lm.overall <- lm(as.formula(overall.Formula), data = london.data)
+summary(lm.overall)
+
+# Predict and test
+london.data$overall.pred <- round(predict.lm(lm.overall, london.data, type="response"), 0)
+london.data$overall.pred <- ordered(london.data$overall.pred, levels=c("1", "2", "3", "4", "5"))
+
+table(london.data$overall, london.data$overall.pred)
+
+misClassificationError <- mean(as.character(london.data$overall) != as.character(london.data$overall.pred), na.rm=T)
+(accuracy <- (1 - misClassificationError) * 100)
+
+# Predict on Lockdown data
+lockdown.data$overall.pred <- round(predict(lm.overall, lockdown.data, type="response"), 0)
+lockdown.data$overall.pred <- ordered(lockdown.data$overall.pred, levels=c("1", "2", "3", "4", "5"))
+```
+
+
+```{r}
+london.data$overall <- ordered(london.data$overall, levels=c("1", "2", "3", "4", "5"))
+london.data$Natural <- ordered(london.data$Natural, levels=c("1", "2", "3", "4", "5"))
+
+london.data$overall.pred <- ordered(london.data$overall.pred, levels=c("1", "2", "3", "4", "5"))
+london.data$Natural.pred <- ordered(london.data$Natural.pred, levels=c("1", "2", "3", "4", "5"))
+
+lockdown.data$overall.pred <- ordered(lockdown.data$overall.pred, levels=c("1", "2", "3", "4", "5"))
+lockdown.data$Natural.pred <- ordered(lockdown.data$Natural.pred, levels=c("1", "2", "3", "4", "5"))
+as.tibble(head(lockdown.data))
+```
+
+## Likert analysis by Location
+
+To get an idea of the behaviour of the model, plot the distributions of 1) Actual responses in the testData, 2) predicted responses in the testData, 3) predicted responses for lockdown.data.
+
+```{r}
+# (london.actual <- ggplot(data = london.data, aes(x=Natural, group=LocationID, fill=LocationID)) +
+#     geom_density(adjust = 1.5, alpha=.4))
+# 
+# (london.pred <- ggplot(data = london.data, aes(x=Natural.pred, group=LocationID, fill=LocationID)) +
+#     geom_density(adjust = 1.5, alpha=.4))
+# 
+# (lockdown.pred <- ggplot(data = lockdown.data, aes(x=Natural.pred, group=LocationID, fill=LocationID)) +
+#     geom_density(adjust = 1.5, alpha=.4))
+
+ggplot(data = london.data, aes(x=LocationID, y=Natural, fill=LocationID)) +
+    geom_boxplot() +
+    geom_jitter(color="black", size=0.4, alpha=0.9)
+    
+ggplot(data = london.data, aes(x=LocationID, y=Natural.pred, fill=LocationID)) +
+    geom_boxplot() +
+    geom_jitter(color="black", size=0.4, alpha=0.9)
+
+ggplot(data = lockdown.data, aes(x=LocationID, y=Natural.pred, fill=LocationID)) +
+    geom_boxplot() +
+    geom_jitter(color="black", size=0.4, alpha=0.9)
+```
+
+
+```{r}
+london.likert.2 = likert(london.data[, c("Natural", "overall")], grouping = london.data$LocationID)
+test.likert.2 = likert(london.data[, c("Natural.pred", "overall.pred")], grouping = london.data$LocationID)
+lockdown.likert.2 = likert(lockdown.data[, c("Natural.pred", "overall.pred")], grouping = lockdown.data$LocationID)
+
+plot(london.likert.2, ordered=FALSE)    # Actual London Data
+plot(test.likert.2, ordered=FALSE)      # Predicted London Data
+plot(lockdown.likert.2, ordered=FALSE)  # Predicted Lockdown data
+
+plot(london.likert.2, type='density')   # Actual London data
+plot(test.likert.2, type='density')     # Predicted London data
+plot(lockdown.likert.2, type='density') # Predicted Lockdown data
+```
+## Likert analysis
+To get an idea of the behaviour of the model, plot the distributions of 1) Actual responses in the testData, 2) predicted responses in the testData, 3) predicted responses for lockdown.data.
+
+```{r}
+london.likert.1 = likert(london.data[, c("Natural", "overall")])
+test.likert.1 = likert(london.data[, c("Natural.pred", "overall.pred")])
+lockdown.likert.1 = likert(lockdown.data[, c("Natural.pred", "overall.pred")])
+
+plot(london.likert.1, ordered=FALSE)    # Actual London data
+plot(test.likert.1, ordered=FALSE)      # Predicted London data
+plot(lockdown.likert.1, ordered=FALSE)  # Predicted Lockdown data
+
+plot(london.likert.1, type='density')   # Actual London data
+plot(test.likert.1, type='density')     # Predicted London data
+plot(lockdown.likert.1, type='density') # Predicted Lockdown data
+```
+
+### Concerns
+Primarily the fact that the output from the models become so extremely grouped within the LocationIDs. The model 1) is typically predicting only 1 or 2 responses for each LocationID, and appears not to predict some of the extreme values (1 or 5) for any responses. Ideally, I would hope to see a similar distribution curve for the actual responses and the predicted version of the same data.
+
+    Note: This version of the models includes the LocationID as a factor, which I assume may be exacerbating this issue. However, previous versions (both the feature selection and model building) were done without including LocationID and had similar issues with getting screwy output distributions.
+
+My bigger concerns are whether this is even the proper way to go about doing what we want. From what I've read, OLR is the best way for modelling Likert scale responses, but it seems to have some weird behaviour on the less-common extremes of the scale.
+
+Is doing the feature selection on a linear regression version of the model valid? I would prefer to do it on the actual OLR, but I've been unable to find much about feature selection for OLR, particular with large feature sets. I found very little about even manual feature reduction for OLR, let alone existing packages for automating it. I'm assuming that using a linear regression just to cut down the features shouldn't really affect the outcome, but I'm not sure that's correct.
+
+## Exponentiated version
+
+According to *Data Science and Predictive Analytics*, the model needs to be exponentiated to make sense, so we'll follow their example (pg. 713)
+
+```{r}
+# Cut down to only the Natural variables 
+natural.train.data <- trainingData[c('Natural', Natural.vars)]
+natural.test.data <- testData[c('Natural', Natural.vars)]
+natural.lockdown.data <- lockdown.data[c(Natural.vars)]
+
+# Following pg 713
+output <- natural.train.data$Natural
+input <- natural.train.data[, -which(names(natural.train.data) %in% Natural.vars)]
+X = as.matrix(input)   # predictor variables
+Y = as.matrix(output)
+```
+
+Note that the predicted values are in *log* terms, so they need to be *exponentiated* to be correctly interpreted.
+
+```{r}
+lm.logit <- glm(as.numeric(Y) ~., data = as.data.frame(X), family = "binomial"(linke="logit"))
+
+ynew <- predict(lm.logit, as.data.frame(X)); # plot(ynew)
+ynew2 <- ifelse(exp(ynew))
+```
