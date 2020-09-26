@@ -160,6 +160,11 @@ lockdown.data$Natural.pred <- ordered(lockdown.data$Natural.pred, levels=c("1", 
 as.tibble(head(lockdown.data))
 ```
 
+```{r}
+
+
+```
+
 ## Likert analysis by Location
 
 To get an idea of the behaviour of the model, plot the distributions of 1) Actual responses in the testData, 2) predicted responses in the testData, 3) predicted responses for lockdown.data.

@@ -194,8 +194,15 @@ def adjusted_r_squared(model_fit, data):
     return 1 - (1 - r_sq) * (len(y) - 1) / (len(y) - len(model_fit.fe_params) - 1)
 
 
-def r_sq_marginal(model_fit, data):
-    response = model_fit.model.formula.split()[0]
+def rirs_aic(model_fit):
+    log_like = model_fit.summary().tables[0][3][3]
+    features = model_fit.fe_params.index
+    return -2 * float(log_like) + 2 * (len(features) - 1)
+
+
+# TODO: Finish this and r_sq_conditional
+# def r_sq_marginal(model, data):
+#     response = model_fit.model.formula.split()[0]
 
 
 def max_pcor(feature_list, target_feature, covar, data):
@@ -212,8 +219,8 @@ def max_pcor(feature_list, target_feature, covar, data):
     return max_feature, max_val
 
 
-def mlm_vif(model, data):
-    features = list(model.fe_params.index[1:])
+def mlm_vif(model_fit, data):
+    features = list(model_fit.fe_params.index[1:])
     X = data[features].dropna()
     X = add_constant(X)
     return pd.Series(
@@ -257,7 +264,9 @@ def par_cors(data, response, feature_lists, covar):
     return response_features
 
 
-def mlm_backward_step(data, response, features, groups, sig_level=0.05, verbose=1):
+def mlm_backward_step(
+    data, response, features, groups, rand_slope=False, sig_level=0.05, verbose=1
+):
     data = data[
         [response, groups] + features
     ]  # Cut down the dataset to just what is required
@@ -270,44 +279,52 @@ def mlm_backward_step(data, response, features, groups, sig_level=0.05, verbose=
 
         # Step 2: fit the model with all features
         try:
-            init_formula = "{} ~ {}".format(response, " + ".join(remaining))
-            init_model = smf.mixedlm(init_formula, data, groups=groups).fit(reml=False)
+            re_formula = "~ {}".format(" + ".join(remaining)) if rand_slope else None
+            formula = "{} ~ {}".format(response, " + ".join(remaining))
+            model = smf.mixedlm(formula, data, groups=groups, re_formula=re_formula)
+            model_fit = model.fit(reml=False)
         except LinAlgError as error:
             # Sometimes a singular matrix error is raised when fitting the model.
             # For now, to handle it we just go ahead and remove the next highest pval as well and move on
-            try:
+            if "pvals" in locals():
                 next_least_sig_feature = pvals.nlargest(count + 2).index[-1]
                 next_least_sig_val = pvals.nlargest(count + 2)[-1]
                 if verbose >= 1:
                     print(
-                        f"Caught a LinAlgError: singular matrix. Removing {next_least_sig_feature}: {next_least_sig_val}.\n"
+                        f"\nCaught a LinAlgError: singular matrix. Removing {next_least_sig_feature}: {next_least_sig_val}.\n"
                     )
                 remaining.remove(next_least_sig_feature)
                 count += 1
-            except UnboundLocalError as error:
-                i = np.random.randint(0, high=len(remaining) - 1)
+            else:
+                # If LinAlgError is raised on first model
+                i = np.random.randint(
+                    0, high=len(remaining) - 1
+                )  # select a random feature to remove NOTE: this should be temporary
                 if verbose >= 1:
                     print(
-                        f"Caught a LinAlgError on the first model, before pvals can be defined. Removing {remaining[i]}"
+                        f"\nCaught a LinAlgError on the first model, before pvals can be defined. Removing {remaining[i]}"
                     )
                 remaining.remove(remaining[i])
 
             if verbose >= 2:
-                print(remaining)
-                print("\n")
+                print(remaining, "\n")
             continue
+
+        if verbose >= 2:
+            print(f"Adjusted R-squared: {adjusted_r_squared(model_fit, data)}")
+            print("================================================\n")
 
         # Step 3: identify least significant (highest p-value) feature
         count = 0
-        pvals = init_model.pvalues
-        pvals = pvals.drop([f"{groups} Var", "Intercept"])
+        pvals = model_fit.summary().tables[1]["P>|z|"]
+        pvals = pd.to_numeric(pvals).drop("Intercept").dropna()
         least_sig_feature = pvals.idxmax()
         least_sig_val = pvals.max()
 
         if verbose >= 2:
-            print(init_formula)
+            print(pvals)
             print(f"{least_sig_feature}: {least_sig_val}")
-            print(f"Adjusted R-squared: {adjusted_r_squared(init_model, data)}")
+            print(f"Adjusted R-squared: {adjusted_r_squared(model_fit, data)}")
             print("================================================\n")
 
         # Step 4: ID if least significant feature exceeds significance level
@@ -322,13 +339,16 @@ def mlm_backward_step(data, response, features, groups, sig_level=0.05, verbose=
             if len(remaining) == 0:
                 return print("No feature meets the selection criterion.")
 
-            model = smf.mixedlm(init_formula, data, groups=groups).fit(reml=False)
+            model = smf.mixedlm(formula, data, groups=groups, re_formula=re_formula)
+            model_fit = model.fit(reml=False)
             break
 
-    return model
+    return model_fit
 
 
-def mlm_step_forward(data, response, features, groups, criterion="aic", verbose=1):
+def mlm_step_forward(
+    data, response, features, groups, rand_slope=False, criterion="aic", verbose=1
+):
     data = data[
         [response, groups] + features
     ]  # Cut down the dataset to just what is required
@@ -342,10 +362,10 @@ def mlm_step_forward(data, response, features, groups, criterion="aic", verbose=
 
     remaining = features.copy()  # Avoid overwriting initial features list
     selected = []
-    if direction == "minimise":
-        current_score, best_new_score = 10000.0, 10000.0
     if direction == "maximise":
         current_score, best_new_score = 0.0, 0.0
+    elif direction == "minimise":
+        current_score, best_new_score = 10000.0, 10000.0
 
     idx = 1
     while remaining and current_score == best_new_score:
@@ -354,12 +374,16 @@ def mlm_step_forward(data, response, features, groups, criterion="aic", verbose=
 
         scores_with_candidates = []
         for candidate in remaining:
+            re_formula = (
+                "~ {}".format(" + ".join(selected + [candidate]))
+                if rand_slope
+                else None
+            )
             formula = "{} ~ {}".format(response, " + ".join(selected + [candidate]))
-            # if verbose is True:
-            #     print(formula)
 
             try:
-                model = smf.mixedlm(formula, data, groups=groups).fit(reml=False)
+                model = smf.mixedlm(formula, data, groups=groups, re_formula=re_formula)
+                model_fit = model.fit(reml=False)
 
             except LinAlgError as error:
                 # Sometimes a singular matrix error is raised when fitting the model.
@@ -370,15 +394,19 @@ def mlm_step_forward(data, response, features, groups, criterion="aic", verbose=
                     )
                 continue
 
-            if criterion == "bic":
-                score = model.bic
-            if criterion == "aic":
-                score = model.aic
-            if criterion == "r_squared":
-                score = r_squared(model, data)
             if criterion == "adjusted_r_squared":
-                score = adjusted_r_squared(model, data)
-
+                score = adjusted_r_squared(model_fit, data)
+            elif criterion == "aic":
+                score = rirs_aic(model_fit) if rand_slope else model_fit.aic
+            elif criterion == "bic":
+                if rand_slope:
+                    print(
+                        "Cannot calculate BIC for Random Slope Random Intercept model yet."
+                    )
+                else:
+                    score = model_fit.bic
+            elif criterion == "r_squared":
+                score = r_squared(model_fit, data)
             scores_with_candidates.append((score, candidate))
 
         scores_with_candidates.sort()
@@ -386,12 +414,6 @@ def mlm_step_forward(data, response, features, groups, criterion="aic", verbose=
             print("\nscores_with_candidates: ", scores_with_candidates)
             print("================================================\n")
 
-        if direction == "minimise":
-            best_new_score, best_candidate = scores_with_candidates.pop(0)
-            if current_score > best_new_score:
-                remaining.remove(best_candidate)
-                selected.append(best_candidate)
-                current_score = best_new_score
         if direction == "maximise":
             best_new_score, best_candidate = scores_with_candidates.pop()
             if current_score < best_new_score:
@@ -399,151 +421,217 @@ def mlm_step_forward(data, response, features, groups, criterion="aic", verbose=
                 selected.append(best_candidate)
                 current_score = best_new_score
 
+        elif direction == "minimise":
+            best_new_score, best_candidate = scores_with_candidates.pop(0)
+            if current_score > best_new_score:
+                remaining.remove(best_candidate)
+                selected.append(best_candidate)
+                current_score = best_new_score
         if verbose >= 1:
-            print("selected: ", selected)
+            print(f"selected: {selected}  |  {criterion}:  {current_score}")
 
+    re_formula = "~ {}".format(" + ".join(selected)) if rand_slope else None
     formula = "{} ~ {}".format(response, " + ".join(selected))
-    model = smf.mixedlm(formula, data, groups=groups).fit(reml=False)
+    model = smf.mixedlm(formula, data, groups=groups, re_formula=re_formula)
+    model_fit = model.fit(reml=False)
 
-    return model
+    return model_fit
 
 
-def vif_reduction(model, data, response, groups, max_vif=10, verbose=1):
+def vif_reduction(
+    model_fit, data, response, groups, rand_slope=False, max_vif=10, verbose=1
+):
     # VIF Reduction
-    vif = mlm_vif(model, data)
+    vif = mlm_vif(model_fit, data)
     if vif.max() > max_vif:
         if verbose >= 1:
             print(
-                f"\nWARNING: VIF of some features exceeds stated max VIF ({max_vif})."
+                f"\nVIF of some features exceeds stated max VIF ({max_vif})."
             )
             print(vif)
     else:
         if verbose >= 1:
             print("No VIF issues identified.")
-        return model, vif
+        return model_fit, vif
 
     while vif.max() > max_vif:
         if verbose >= 1:
-            print(f"\nRemoving {vif.idxmax()}: {vif.max()}")
+            print(f"Removing {vif.idxmax()}: {vif.max()}")
 
-        cutdown_features = list(model.fe_params.index[1:])
+        cutdown_features = list(model_fit.fe_params.index[1:])
         cutdown_features.remove(vif.idxmax())
+        re_formula = "~ {}".format(" + ".join(cutdown_features)) if rand_slope else None
         formula = "{} ~ {}".format(response, " + ".join(cutdown_features))
 
-        model = smf.mixedlm(formula, data, groups=groups).fit(reml=False)
-        vif = mlm_vif(model, data)
+        model = smf.mixedlm(formula, data, groups=groups, re_formula=re_formula)
+        model_fit = model.fit(reml=False)
+        vif = mlm_vif(model_fit, data)
 
-    return model, vif
+    return model_fit, vif
 
 
 #### Full Feature Selection Process ####
 def mlm_feature_selection(
     data,
     response,
-    features,
+    feature_lists,
     groups,
+    rand_slope=False,
+    par_cor_selection=False,
     backward_selection=True,
+    forward_selection=True,
     sig_level=0.05,
-    criterion="bic",
+    criterion="aic",
     check_vif=True,
     max_vif=10,
     verbose=1,
 ):
+    results = {}
+
+    if par_cor_selection:
+        partial_corrs = par_cors(data, response, feature_lists, groups)
+        if verbose >= 1:
+            print(partial_corrs)
+        features = list(partial_corrs.keys())
+        results["partial_corrs"] = partial_corrs
+    else:
+        features = sorted({x for v in FEATS_LISTS.values() for x in v})
+
     if backward_selection is True:
         print("Running Backward step feature selection.")
         t1_start = process_time()  # start a process timer
-        back_model = mlm_backward_step(
-            data, response, features, groups, sig_level, verbose
+        model_fit = mlm_backward_step(
+            data=data,
+            response=response,
+            features=features,
+            groups=groups,
+            rand_slope=rand_slope,
+            sig_level=sig_level,
+            verbose=verbose,
         )
+        model = model_fit.model
         t1_stop = process_time()
 
-        back_features = list(back_model.fe_params.index[1:])
+        features = list(model_fit.fe_params.index[1:])
+        results["back_features"] = features
+
         if verbose >= 1:
             print("\n")
-            print(back_model.summary())
-            print("AIC:      ", back_model.aic)
-            print("BIC:      ", back_model.bic)
+            summarise_model(model_fit, data, plots=False)
+            print(
+                f"\n============== {response} Backwards took {t1_stop-t1_start} secs. ================"
+            )
+        results["back_model"] = model
+        results["back_model_fit"] = model_fit
 
-        print(back_model.model.formula)
-        print("Adj R-sq: ", adjusted_r_squared(back_model, data))
-        print(
-            f"\n============== {response} Backwards took {t1_stop-t1_start} secs. ================"
+    if forward_selection:
+        print("\nRunning Forward step feature selection.")
+        t2_start = process_time()
+        model_fit = mlm_step_forward(
+            data=data,
+            response=response,
+            features=features,
+            groups=groups,
+            rand_slope=rand_slope,
+            criterion=criterion,
+            verbose=verbose,
         )
-    else:
-        init_formula = "{} ~ {}".format(response, " + ".join(features))
-        back_model = smf.mixedlm(init_formula, data, groups=groups).fit(reml=False)
-        back_features = list(back_model.fe_params.index[1:])
+        model = model_fit.model
+        t2_stop = process_time()
+        results["forward_features"] = list(model_fit.fe_params.index[1:])
 
-    print("\nRunning Forward step feature selection.")
-    t2_start = process_time()
-    forward_model = mlm_step_forward(
-        data, response, back_features, groups, criterion, verbose
-    )
-    t2_stop = process_time()
-    forward_features = list(forward_model.fe_params.index[1:])
-
-    if verbose >= 1:
-        print(forward_model.model.formula)
-        print(forward_model.summary())
-        print("AIC:      ", forward_model.aic)
-        print("BIC:      ", forward_model.bic)
-        print(forward_model.random_effects)
-
-    print(forward_model.model.formula)
-    print("Adj R-sq: ", adjusted_r_squared(forward_model, data))
-    print(
-        f"\n============== {response} Forwards took {t2_stop-t2_start} secs. ============\n"
-    )
+        if verbose >= 1:
+            print("\n")
+            summarise_model(model_fit, data, plots=False)
+            print(
+                f"\n============== {response} Forwards took {t2_stop-t2_start} secs. ============\n"
+            )
+        results["forward_model"] = model
+        results["forward_model_fit"] = model_fit
 
     if check_vif is True:
         # VIF Reduction
-        final_model, vif = vif_reduction(
-            forward_model, data, response, groups, max_vif, verbose=verbose
+        model_fit, vif = vif_reduction(
+            model_fit=model_fit,
+            data=data,
+            response=response,
+            groups=groups,
+            rand_slope=rand_slope,
+            max_vif=max_vif,
+            verbose=verbose,
         )
+        model = model_fit.model
 
-        if verbose >= 1:
-            print(final_model.model.formula)
-            print(final_model.summary())
-            print("Adj R-sq: ", adjusted_r_squared(final_model, data))
-            print("AIC:      ", final_model.aic)
-            print("BIC:      ", final_model.bic)
-            print(final_model.random_effects)
-    else:
-        final_model = forward_model
-        vif = mlm_vif(final_model, data)
+        if verbose >= 2:
+            summarise_model(model_fit, data, plots=False)
+        results["vif"] = vif
 
-    return final_model, back_model, forward_model, vif
+    results["final_model"] = model
+    results["final_model_fit"] = model_fit
+
+    return results
 
 
-def summarise_model(model, data, response=None):
+def summarise_model(model_fit, data, response=None, plots=True):
     if response is None:
-        response = model.model.endog_names
+        response = model_fit.model.endog_names
 
-    print(model.model.formula)
-    print(model.summary())
-    print("Adj R-sq: ", adjusted_r_squared(model, data))
-    print("AIC:      ", model.aic)
-    print("BIC:      ", model.bic)
-    print(model.random_effects)
+    print(model_fit.model.formula)
+    print(model_fit.summary())
+    print("Adj R-sq: ", adjusted_r_squared(model_fit, data))
+    print("AIC:      ", model_fit.aic)
+    print("BIC:      ", model_fit.bic)
+    print(model_fit.random_effects)
 
     performance = pd.DataFrame()
-    performance["residuals"] = model.resid.values
+    performance["residuals"] = model_fit.resid.values
     performance["actual"] = data[response]
-    # performance["predicted"] = model.predict(data)
-    performance["predicted"] = model.fittedvalues
+    performance["predicted"] = model_fit.predict(data)
+    performance["fitted"] = model_fit.fittedvalues
 
-    sns.lmplot(x="predicted", y="residuals", data=performance)
-    plt.title(f"Residual vs. Fitted for {response} model")
-    plt.xlabel("Fitted values")
-    plt.ylabel("Residuals")
-    plt.show()
+    if plots:
+        sns.lmplot(x="fitted", y="residuals", data=performance)
+        plt.title(f"Residual vs. Fitted for {response} model")
+        plt.xlabel("Fitted values")
+        plt.ylabel("Residuals")
+        plt.show()
 
-    sns.lmplot(x="predicted", y="actual", data=performance, fit_reg=True)
-    # plt.scatter(model.fittedvalues, data[response], alpha=0.5)
-    plt.title(f"Actual vs. Fitted for {response} model")
-    plt.xlabel("Fitted values")
-    plt.ylabel("Actual values")
-    plt.show()
+        sns.lmplot(x="fitted", y="actual", data=performance, fit_reg=True)
+        plt.title(f"Actual vs. Fitted for {response} model")
+        plt.xlabel("Fitted values")
+        plt.ylabel("Actual values")
+        plt.show()
+
+    print("Adj R-sq: ", adjusted_r_squared(model_fit, data))
+
+    return performance
 
 
-# Load data
+def predict_rirs(model_fit):
+    """Returns the fitted values for the model.
+
+    The fitted values reflect the mean structure specified by the 
+    fixed effects and the predicted random effects.
+
+    Parameters
+    ----------
+    model_fit : [type]
+        [description]
+    """
+    fit = np.dot(model_fit.model.exog, model_fit, fe_params)
+    re = model_fit.random_effects
+    for group_ix, group in enumerate(model_fit.model.group_labels):
+        ix = model_fit.model.row_indices[group]
+
+        mat = []
+        if model_fit.model.exog_re_li is not None:
+            mat.append(model_fit.model.exog_re_li[group_ix])
+        for c in model_fit.model.exog_vc.names:
+            if group in model_fit.model.exog_vc.names[c]:
+                mat.append(model_fit.model.exog_vc.names[c][group])
+        mat = np.concatenate(mat, axis=1)
+
+        fit[ix] += np.dot(mat, re[group])
+
+    return fit
+

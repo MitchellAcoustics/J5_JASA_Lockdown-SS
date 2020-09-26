@@ -210,6 +210,10 @@ vif(selected.mod, data = prelockdown.data)
 ```
 
 
+```{r}
+PleasantMod <- lmer("Pleasant ~ FS + FS_50 + I_50 + LZeq_95 + R_50 + SIL_10_SIL_90 + SIL_50 + (")
+```
+
 ## Checking prediction behaviour
 
 ```{r}
