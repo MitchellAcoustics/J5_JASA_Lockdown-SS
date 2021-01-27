@@ -445,9 +445,7 @@ def vif_reduction(
     vif = mlm_vif(model_fit, data)
     if vif.max() > max_vif:
         if verbose >= 1:
-            print(
-                f"\nVIF of some features exceeds stated max VIF ({max_vif})."
-            )
+            print(f"\nVIF of some features exceeds stated max VIF ({max_vif}).")
             print(vif)
     else:
         if verbose >= 1:
@@ -634,4 +632,20 @@ def predict_rirs(model_fit):
         fit[ix] += np.dot(mat, re[group])
 
     return fit
+
+
+if __name__ == "__main__":
+    import pandas as pd
+
+    data = pd.read_csv(
+        "C:\\Users\\Andrew\\OneDrive - University College London\\_PhD\\Papers - Drafts\\J3_JASA_1f-Soundscape-Modelling\\results\\2020-10-09\\LondonVeniceGranadaBINResults_2020-10-09.csv"
+    )
+
+    response = "Pleasant"
+    groups = "LocationID"
+
+    response_features = par_cors(data, response, FEATS_LISTS, groups)
+    features = list(response_features.keys())
+
+    model_fit = mlm_backward_step(data, "Pleasant", features, groups, False,)
 
