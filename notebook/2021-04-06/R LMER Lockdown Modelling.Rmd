@@ -1,0 +1,121 @@
+---
+title: "R LMER Lockdown Results"
+author: "Andrew Mitchell"
+date: "26/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Presenting results of the Lockdown Linear mixed Effects model
+
+Although the feature selection was completed in Python, the actual construction and application of the model have been done in R. In this notebook, I am using some useful functions in R to nicely summarise and display the final results and various tests. 
+
+```{r, warning=FALSE, message=FALSE}
+library(here)
+library(readxl)
+library(dplyr)
+library(correlation)
+
+prelockdownData <- read.csv(here("data", "2020-09-01", "preLockdownData.csv"))
+lockdownData <- read.csv(here("data", "2020-09-01", "lockdownData.csv"))
+
+prelockdownData <- prelockdownData %>% mutate_at(vars(GroupID, LocationID), funs(as.factor))
+prelockdownData['Lockdown'] <- 1
+lockdownData <- lockdownData %>% mutate_at(vars(GroupID, LocationID), funs(as.factor))
+lockdownData['Lockdown'] <- 2
+
+fullData <- rbind(prelockdownData, lockdownData)
+scaleData <- fullData[, -c(1, 2, 161, 163)]
+scaleData[, -c(1:8, 158:159)] <- scale(scaleData[, -c(1:8, 158:159)])
+
+prelockdownData <- scaleData %>% filter(Lockdown == 1)
+lockdownData <- scaleData %>% filter(Lockdown == 2)
+```
+
+## Pleasant Model
+
+```{r}
+# corr_data <- prelockdownData[c('Pleasant', 'LocationID', 'FS', 'FS_10', 'FS_10_FS_90', 'FS_5', 'FS_50', 'FS_5_FS_95', 'FS_90', 'FS_95', 'FS_Max', 'FS_Max_FS_Min', 'FS_Min', 'I', 'I_10', 'I_10_I_90', 'I_5', 'I_50', 'I_5_I_95', 'I_90', 'I_95', 'I_Max', 'I_Max_I_Min', 'I_Min', 'LAeq', 'LAeq_10', 'LAeq_10_LAeq_90', 'LAeq_5', 'LAeq_50', 'LAeq_5_LAeq_95', 'LAeq_90', 'LAeq_95', 'LAeq_Max', 'LAeq_Max_LAeq_Min', 'LAeq_Min' )]
+
+options(digits=3)
+
+corr_data <- prelockdownData[c(7, 158, 9:157)]
+
+Parameter2 <- c()
+r <- c()
+p <- c()
+for (feature in names(corr_data[, -c(1, 2)])) {
+    res <- suppressMessages(cor_test(corr_data[c('Pleasant', feature, 'LocationID')], x = 'Pleasant', y = feature, partial=FALSE, multilevel=TRUE))
+    Parameter2 <- append(Parameter2_list, feature)
+    r <- append(r_list, res$r)
+    p <- append(p_list, res$p)
+}
+r <- round(r, digits=3)
+p <- round(p, digits=3)
+results <- data.frame(Parameter2, r, p)
+results[order(p),]
+```
+
+```{r}
+features <- filter(results, p <= 0.05)$Parameter2
+features
+```
+
+```{r, warning=FALSE}
+library(glue)
+feature_string <- paste(c("LAeq", "LCeq", "LCeq_10_LCeq_90", "LZeq", "LZeq_10_LZeq_90", "N_10", "N_10_N_90", "R", "S", "SIL_10", "S_10", "T_90"), collapse = " + ")
+Pleasant_formula <- as.formula(glue("Pleasant ~ ", feature_string, " + (", feature_string, "|LocationID)"))
+
+init_Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = prelockdownData)
+
+step_Pleasant_model <- lmerTest::step(init_Pleasant_model, data = prelockdownData)
+step_Pleasant_model
+```
+
+```{r}
+Pleasant_model <- lmerTest::get_model(step_Pleasant_model)
+# Pleasant_model <- lmerTest::step(Pleasant_formula, data = prelockdownData, REML=FALSE)
+
+sjPlot::tab_model(Pleasant_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
+sjPlot::plot_model(Pleasant_model, type="re", title = "Random effects - Pleasant", show.values = TRUE)
+sjPlot::plot_model(Pleasant_model, show.values = TRUE)
+MuMIn::r.squaredGLMM(Pleasant_model)
+```
+
+
+## Eventful Model
+
+```{r, warning=FALSE}
+Eventful_formula <- as.formula("Eventful ~ R_50 + LAeq_Min + (R_50 + LAeq_Min|LocationID)")
+init_Eventful_model <- lmerTest::lmer(Eventful_formula, data = prelockdownData)
+
+step_Eventful_model <- lmerTest::step(init_Eventful_model, data = prelockdownData)
+step_Eventful_model
+```
+
+```{r}
+Eventful_model <- lmerTest::get_model(step_Eventful_model)
+
+
+sjPlot::tab_model(Eventful_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
+sjPlot::plot_model(Eventful_model, type="re", title = "Random effects - Eventful", show.values = TRUE)
+sjPlot::plot_model(Eventful_model, show.values = TRUE)
+MuMIn::r.squaredGLMM(Eventful_model)
+
+```
+
+## Pleasant Model
+
+```{r}
+Pleasant_formula <- as.formula("Pleasant ~ LZeq + THD_95 + PeakSpectralCentroid + LZeq_10_LZeq_90 + I + (LZeq + THD_95 + PeakSpectralCentroid + LZeq_10_LZeq_90 + I|LocationID)")
+
+Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = prelockdownData, REML=FALSE)
+
+sjPlot::tab_model(Pleasant_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
+sjPlot::plot_model(Pleasant_model, type="re", title = "Random effects - Pleasant", show.values = TRUE)
+sjPlot::plot_model(Pleasant_model, show.values = TRUE)
+
+```
