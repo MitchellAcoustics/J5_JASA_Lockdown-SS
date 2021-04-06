@@ -18,7 +18,7 @@ library(here)
 library(readxl)
 library(dplyr)
 
-prelockdownData <- read.csv(here("data", "2020-09-01", "prelockdownData.csv"))
+prelockdownData <- read.csv(here("data", "2020-09-01", "preLockdownData.csv"))
 lockdownData <- read.csv(here("data", "2020-09-01", "lockdownData.csv"))
 
 prelockdownDataTrain <- read.csv(here("data", "2020-09-01", "prelockdownDataTrain.csv"))
@@ -34,28 +34,43 @@ prelockdownDataTest <- prelockdownDataTest %>% mutate_at(vars(GroupID, LocationI
 
 ## Pleasant Model
 
-```{r}
+```{r, warning=FALSE}
 Pleasant_formula <- as.formula("Pleasant ~ LZeq + THD_95 + PeakSpectralCentroid + LZeq_10_LZeq_90 + I + (LZeq + THD_95 + PeakSpectralCentroid + LZeq_10_LZeq_90 + I|LocationID)")
+init_Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = prelockdownData)
 
-Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = prelockdownData, REML=FALSE)
+step_Pleasant_model <- lmerTest::step(init_Pleasant_model, data = prelockdownData)
+step_Pleasant_model
+```
+
+```{r}
+Pleasant_model <- lmerTest::get_model(step_Pleasant_model)
+# Pleasant_model <- lmerTest::step(Pleasant_formula, data = prelockdownData, REML=FALSE)
 
 sjPlot::tab_model(Pleasant_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
 sjPlot::plot_model(Pleasant_model, type="re", title = "Random effects - Pleasant", show.values = TRUE)
 sjPlot::plot_model(Pleasant_model, show.values = TRUE)
-
+MuMIn::r.squaredGLMM(Pleasant_model)
 ```
 
 
 ## Eventful Model
 
-```{r}
+```{r, warning=FALSE}
 Eventful_formula <- as.formula("Eventful ~ R_50 + LAeq_Min + (R_50 + LAeq_Min|LocationID)")
-Eventful_model <- lmerTest::lmer(Eventful_formula, data = prelockdownData, REML=FALSE)
+init_Eventful_model <- lmerTest::lmer(Eventful_formula, data = prelockdownData)
+
+step_Eventful_model <- lmerTest::step(init_Eventful_model, data = prelockdownData)
+step_Eventful_model
+```
+
+```{r}
+Eventful_model <- lmerTest::get_model(step_Eventful_model)
 
 
 sjPlot::tab_model(Eventful_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
 sjPlot::plot_model(Eventful_model, type="re", title = "Random effects - Eventful", show.values = TRUE)
 sjPlot::plot_model(Eventful_model, show.values = TRUE)
+MuMIn::r.squaredGLMM(Eventful_model)
 
 ```
 
