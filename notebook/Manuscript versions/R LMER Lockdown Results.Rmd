@@ -45,6 +45,11 @@ sjPlot::plot_model(Pleasant_model, show.values = TRUE)
 
 ```
 
+```{r}
+
+MuMIn::r.squaredGLMM(Pleasant_model)
+```
+
 
 ## Eventful Model
 
@@ -56,6 +61,12 @@ Eventful_model <- lmerTest::lmer(Eventful_formula, data = prelockdownData, REML=
 sjPlot::tab_model(Eventful_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
 sjPlot::plot_model(Eventful_model, type="re", title = "Random effects - Eventful", show.values = TRUE)
 sjPlot::plot_model(Eventful_model, show.values = TRUE)
+
+```
+
+```{r}
+MuMIn::r.squaredGLMM(Eventful_model)
+
 
 ```
 
