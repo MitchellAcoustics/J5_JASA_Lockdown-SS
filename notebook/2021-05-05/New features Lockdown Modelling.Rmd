@@ -1,0 +1,252 @@
+---
+title: "2021 Version of the Multi-level Lockdown Model"
+author: "Andrew Mitchell"
+date: "16/04/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Reporting
+
+We will be using the TRIPOD (Transparent reporting of multivariable prediction model for individual prognosis or diagnosis) framework for reporting the model development, validation, and results.
+
+## Outcome
+
+### 6a Clearly define the outcome that is predicted by the prediction model, including how and when assessed.
+
+This study involves predicting five outcome variables, through five separately constructed models. These outcomes are survey responses as collected according to the SSID protocol through in-situ questionnaires in various urban public spaces. The five outcome variables are:
+
+1.  `Pleasant` - from (-1, 1) derived from the 8 PAQs according to ISO 12913 Part 3
+2.  `Eventful` - from (-1, 1) derived from the 8 PAQs according to ISO 12913 Part 3
+3.  `Human` - from (1, 5) survey response regarding the relative presence/dominance of human sounds
+4.  `Traffic` - from (1, 5) survey response regarding the relative presence/dominance of traffic sounds
+5.  `Natural` - from (1, 5) survey response regarding the relative presence/dominance of natural sounds
+
+### 6b Report any actions to blind assessment of the outcome to be predicted
+
+N/A
+
+## Predictors
+
+### 7a Clearly define all predictors used in developing or validating the multivariable prediction model, including how and when they were measured.
+
+The acoustic predictors are derived from the 30s binaural recordings taken during the SSID Protocol. The (psycho)acoustic metrics considered are:
+
+-   Loudness ($N_5$, sones)
+
+-   Sharpness (acum)
+
+-   Roughness (asper)
+
+-   Impulsiveness (iu)
+
+-   Fluctuation Strength (vacil)
+
+-   $L_{Aeq,30s}$ (dB)
+
+-   $L_{A10} - L_{A90}$ (dB)
+
+-   $L_{Ceq} - L_{Aeq}$ (dB)
+
+-   Speech Interference Level ($SIL3_{50}$, dB) 
+
+-   Peak Spectral Centroid (dB)
+
+```{r predictors, warning=FALSE, message=FALSE}
+features <- c("N_5", "S", "R", "I", "FS", "LAeq", "LAeq_10_LAeq_90", "LCeq_LAeq", "SIL_50", "PeakSpectralCentroid")
+feature_string <- paste(features, collapse = " + ")
+feature_string
+```
+
+## Sample Size
+
+### 8 Explain how the study size was arrived at.
+(Covered in the manuscript already)
+
+```{r load data, message=FALSE}
+library(readr)
+library(glue)
+library(tidyr)
+library(here)
+library(knitr)
+library(dplyr)
+
+
+data <- read_csv(here("data", "2021-04-16", "LondonVeniceBINResults_2020-08-13_4.csv"))
+data <- as_tibble(data)
+data["LCeq_LAeq"] <- data$LCeq - data$LAeq
+data <- data[c("GroupID", "LocationID", "Lockdown", "Pleasant", "Eventful", "Human", "Traffic", "Natural", features)]
+
+print("Full data table has dimensions: ")
+print(dim(data))
+kable(print(data))
+```
+
+## Missing Data
+
+### 9 Describe how missing data were handled (e.g. complete-case analysis, single imputation, multiple imputation) with details of any imputation method
+
+#### Dealing with PAQ missing data
+
+According to our data quality rules, any survey responses with more than half of the PAQ responses missing were excluded whole-sale. Otherwise, where PAQ responses are missing, they are given a value of 3 (Neutral) prior to the ISO trigonometric projection to the complex Pleasantness and Eventfulness values.
+
+#### Missing Sound Source data
+
+Survey responses missing a response for the target outcome are excluded only from that model. e.g. a response may be missing only the Natural sound question - it is excluded only from the Natural model and will be included in all other models (e.g. Traffic, Human, Pleasant,)
+
+#### Missing acoustic data
+
+Only responses which have a corresponding recording are included in this dataset, therefore there is no missing acoustic data for a given survey response.
+
+## Statistical Analysis Methods
+
+### 10a Describe how predictors were handled in the analyses
+
+All predictors are numeric values, in the units described earlier. Before conducting feature selection, the input features are z-scaled to ensure proper comparison of their effect sizes. After the feature selection, when reporting the final fitted models, both scaled and unscaled coefficients will be reported.
+
+```{r treat features, warning=FALSE, message=FALSE}
+data <- data %>% mutate_at(vars(GroupID, LocationID, Lockdown), funs(as.factor))
+data <- data %>% mutate_at(vars(c("Pleasant", "Eventful", "Traffic", "Human", "Natural", features)), funs(as.numeric))
+kable(head(data))
+```
+
+### 10b Specify type of model, all model-building procedures (including any predictor selection), and method for internal validation.
+
+#### Train-test split
+
+We use an 80/20 train/test split. The splits are balanced within each LocationID so that we are randomly sampling from each location equally.
+
+```{r, warning=FALSE, message=FALSE}
+prelockdownData <- data %>% filter(Lockdown == 1)
+lockdownData <- data %>% filter(Lockdown == 2)
+
+prelockdownData[c(features)] <- scale(prelockdownData[c(features)])
+
+# Train-test split
+library(groupdata2)
+set.seed(42)
+
+parts = partition(prelockdownData, p=0.2, cat_col="LocationID")
+
+train = parts[[2]]
+test = parts[[1]]
+kable(summary(train))
+```
+
+```{r, warning=FALSE, message=FALSE}
+kable(summary(test))
+```
+
+## Pleasant Model
+
+
+```{r pleasant feature selection, warning=FALSE, message=FALSE}
+
+Pleasant_formula <- as.formula(glue("Pleasant ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
+
+init_Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = train)
+
+step_Pleasant_model <- lmerTest::step(init_Pleasant_model, data = train, reduce.random=TRUE)
+kable(step_Pleasant_model$fixed)
+kable(step_Pleasant_model$random)
+```
+
+```{r, warning=FALSE, message=FALSE}
+Pleasant_model <- lmerTest::get_model(step_Pleasant_model)
+# Pleasant_model <- lmerTest::step(Pleasant_formula, data = prelockdownData, REML=FALSE)
+
+sjPlot::tab_model(Pleasant_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
+sjPlot::plot_model(Pleasant_model, type="re", title = "Random effects - Pleasant", show.values = TRUE)
+sjPlot::plot_model(Pleasant_model, show.values = TRUE)
+
+kable(MuMIn::r.squaredGLMM(Pleasant_model))
+```
+
+
+## Eventful Model
+
+```{r, warning=FALSE, message=FALSE}
+Eventful_formula <- as.formula(glue("Eventful ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
+
+init_Eventful_model <- lmerTest::lmer(Eventful_formula, data = train)
+
+step_Eventful_model <- lmerTest::step(init_Eventful_model, data = train)
+kable(step_Eventful_model$fixed)
+kable(step_Eventful_model$random)
+```
+
+```{r, warning=FALSE, message=FALSE}
+Eventful_model <- lmerTest::get_model(step_Eventful_model)
+
+
+sjPlot::tab_model(Eventful_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
+sjPlot::plot_model(Eventful_model, type="re", title = "Random effects - Eventful", show.values = TRUE)
+sjPlot::plot_model(Eventful_model, show.values = TRUE)
+kable(MuMIn::r.squaredGLMM(Eventful_model))
+```
+
+## Natural Model
+
+```{r, warning=FALSE, message=FALSE}
+Natural_formula <- as.formula(glue("Natural ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
+
+init_Natural_model <- lmerTest::lmer(Natural_formula, data = train)
+
+step_Natural_model <- lmerTest::step(init_Natural_model, data = train)
+kable(step_Natural_model$fixed)
+kable(step_Natural_model$random)
+```
+
+```{r, warning=FALSE, message=FALSE}
+Natural_model <- lmerTest::get_model(step_Natural_model)
+
+sjPlot::tab_model(Natural_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
+sjPlot::plot_model(Natural_model, type="re", title = "Random effects - Natural", show.values = TRUE)
+sjPlot::plot_model(Natural_model, show.values = TRUE)
+kable(MuMIn::r.squaredGLMM(Natural_model))
+```
+
+## Traffic Model
+
+```{r, warning=FALSE, message=FALSE}
+Traffic_formula <- as.formula(glue("Traffic ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
+
+init_Traffic_model <- lmerTest::lmer(Traffic_formula, data = train)
+
+step_Traffic_model <- lmerTest::step(init_Traffic_model, data = train)
+kable(step_Traffic_model$fixed)
+kable(step_Traffic_model$random)
+```
+
+```{r, warning=FALSE, message=FALSE}
+Traffic_model <- lmerTest::get_model(step_Traffic_model)
+
+sjPlot::tab_model(Traffic_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
+sjPlot::plot_model(Traffic_model, type="re", title = "Random effects - Traffic", show.values = TRUE)
+sjPlot::plot_model(Traffic_model, show.values = TRUE)
+kable(MuMIn::r.squaredGLMM(Traffic_model))
+```
+
+## Human Model
+
+```{r, warning=FALSE, message=FALSE}
+Human_formula <- as.formula(glue("Human ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
+
+init_Human_model <- lmerTest::lmer(Human_formula, data = train)
+
+step_Human_model <- lmerTest::step(init_Human_model, data = train)
+kable(step_Human_model$fixed)
+kable(step_Human_model$random)
+```
+
+```{r, warning=FALSE, message=FALSE}
+Human_model <- lmerTest::get_model(step_Human_model)
+
+sjPlot::tab_model(Human_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
+sjPlot::plot_model(Human_model, type="re", title = "Random effects - Traffic", show.values = TRUE)
+sjPlot::plot_model(Human_model, show.values = TRUE)
+kable(MuMIn::r.squaredGLMM(Human_model))
+```
