@@ -1,7 +1,7 @@
 ---
 title: "2021 Version of the Multi-level Lockdown Model"
 author: "Andrew Mitchell"
-date: "16/04/2020"
+date: "05/05/2021"
 output: html_document
 ---
 
@@ -53,12 +53,10 @@ The acoustic predictors are derived from the 30s binaural recordings taken durin
 
 -   Speech Interference Level ($SIL3_{50}$, dB) 
 
--   Peak Spectral Centroid (dB)
-
 ```{r predictors, warning=FALSE, message=FALSE}
-features <- c("N_5", "S", "R", "I", "FS", "LAeq", "LAeq_10_LAeq_90", "LCeq_LAeq", "SIL_50", "PeakSpectralCentroid")
-feature_string <- paste(features, collapse = " + ")
-feature_string
+init_features <- c("Loudness_N5(soneGF)", "Sharpness_S(acum)", "Rough_HM_R(asper)", "I_HM_I(iu)", "FS_(vacil)", "LAeq_L(A)(dB(SPL))", "LA10_LA90(dB(SPL))", "LCeq_LAeq(dB(SPL))", "SIL3_Avg,arith(dB(SPL))")
+init_feature_string <- paste(init_features, collapse = " + ")
+init_feature_string
 ```
 
 ## Sample Size
@@ -66,24 +64,37 @@ feature_string
 ### 8 Explain how the study size was arrived at.
 (Covered in the manuscript already)
 
-```{r load data, message=FALSE}
-library(readr)
+```{r load data, message=FALSE, warning=FALSE}
 library(glue)
 library(tidyr)
 library(here)
 library(knitr)
 library(dplyr)
 
-
-data <- read_csv(here("data", "2021-04-16", "LondonVeniceBINResults_2020-08-13_4.csv"))
+library(readxl)
+data <- read_excel(here("data", "2021-05-05", "SSID Europe Database V1.0.xlsx"), sheet = "Master Merge")
 data <- as_tibble(data)
-data["LCeq_LAeq"] <- data$LCeq - data$LAeq
-data <- data[c("GroupID", "LocationID", "Lockdown", "Pleasant", "Eventful", "Human", "Traffic", "Natural", features)]
+data <- data[c("GroupID", "LocationID", "Lockdown", "ISOPleasant", "ISOEventful", "Human", "Traffic", "Natural", init_features)]
+
+data <- rename(data, "N5" = "Loudness_N5(soneGF)")
+data <- rename(data, "S" = "Sharpness_S(acum)")
+data <- rename(data, "R" = "Rough_HM_R(asper)")
+data <- rename(data, "I" = "I_HM_I(iu)")
+data <- rename(data, "FS" = "FS_(vacil)")
+data <- rename(data, "LAeq" = "LAeq_L(A)(dB(SPL))")
+data <- rename(data, "LA10_LA90" = "LA10_LA90(dB(SPL))")
+data <- rename(data, "LCeq_LAeq" = "LCeq_LAeq(dB(SPL))")
+data <- rename(data, "SIL3" = "SIL3_Avg,arith(dB(SPL))")
+
+features <- c("N5", "S", "R", "I", "FS", "LAeq", "LA10_LA90", "LCeq_LAeq", "SIL3")
+feature_string <- paste(features, collapse = " + ")
+feature_string
 
 print("Full data table has dimensions: ")
 print(dim(data))
 kable(print(data))
 ```
+
 
 ## Missing Data
 
@@ -109,7 +120,7 @@ All predictors are numeric values, in the units described earlier. Before conduc
 
 ```{r treat features, warning=FALSE, message=FALSE}
 data <- data %>% mutate_at(vars(GroupID, LocationID, Lockdown), funs(as.factor))
-data <- data %>% mutate_at(vars(c("Pleasant", "Eventful", "Traffic", "Human", "Natural", features)), funs(as.numeric))
+data <- data %>% mutate_at(vars(c("ISOPleasant", "ISOEventful", "Traffic", "Human", "Natural", features)), funs(as.numeric))
 kable(head(data))
 ```
 
@@ -123,6 +134,7 @@ We use an 80/20 train/test split. The splits are balanced within each LocationID
 prelockdownData <- data %>% filter(Lockdown == 1)
 lockdownData <- data %>% filter(Lockdown == 2)
 
+prelockdownData <- drop_na(prelockdownData)
 prelockdownData[c(features)] <- scale(prelockdownData[c(features)])
 
 # Train-test split
@@ -142,10 +154,9 @@ kable(summary(test))
 
 ## Pleasant Model
 
-
 ```{r pleasant feature selection, warning=FALSE, message=FALSE}
 
-Pleasant_formula <- as.formula(glue("Pleasant ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
+Pleasant_formula <- as.formula(glue("ISOPleasant ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
 
 init_Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = train)
 
@@ -169,7 +180,7 @@ kable(MuMIn::r.squaredGLMM(Pleasant_model))
 ## Eventful Model
 
 ```{r, warning=FALSE, message=FALSE}
-Eventful_formula <- as.formula(glue("Eventful ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
+Eventful_formula <- as.formula(glue("ISOEventful ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
 
 init_Eventful_model <- lmerTest::lmer(Eventful_formula, data = train)
 
@@ -250,3 +261,40 @@ sjPlot::plot_model(Human_model, type="re", title = "Random effects - Traffic", s
 sjPlot::plot_model(Human_model, show.values = TRUE)
 kable(MuMIn::r.squaredGLMM(Human_model))
 ```
+
+##### Tried an attempt at Cross-validation -> not successful
+
+### 5-fold CV
+
+```{r}
+# set.seed(42)
+# 
+# Pleasant_formula <- as.formula(glue("ISOPleasant ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
+# # init_Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = train)
+# 
+# prelockdownData$ID <- c(1:nrow(prelockdownData))
+# 
+# # confusion_matrices <- list()
+# models <- list()
+# accuracy <- c()
+# 
+# for (i in c(1:5)) {
+#     # creating 5 random folds from the cancer data set
+#     folds <- caret::createFolds(prelockdownData$ISOPleasant, k=5)
+#     
+#     # Splitting the data into training and testing
+#     test <- prelockdownData[prelockdownData$ID %in% folds[[i]], ]
+#     train <- prelockdownData[prelockdownData$ID %in% unlist(folds[-i]), ]
+#     
+#     # feature selection using lmerTest::step
+#     init_Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = train)
+#     step_model <- lmerTest::step(init_Pleasant_model, data=train, reduce.random=TRUE)
+#     step_model <- get_model(step_model)
+#     
+#     models[[i]] <- step_model
+#     accuracy[[i]] <- cAIC4::cAIC(step_model)
+#     
+# }
+```
+
+

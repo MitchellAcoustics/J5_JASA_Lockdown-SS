@@ -1,0 +1,439 @@
+---
+title: "glmmLasso trial"
+author: "Andrew Mitchell"
+date: "05/05/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r predictors, warning=FALSE, message=FALSE}
+init_features <- c("Loudness_N5(soneGF)", "Sharpness_S(acum)", "Rough_HM_R(asper)", "I_HM_I(iu)", "FS_(vacil)", "LAeq_L(A)(dB(SPL))", "LA10_LA90(dB(SPL))", "LCeq_LAeq(dB(SPL))", "SIL3_Avg,arith(dB(SPL))")
+init_feature_string <- paste(init_features, collapse = " + ")
+init_feature_string
+```
+
+```{r load data, message=FALSE, warning=FALSE}
+library(glue)
+library(tidyr)
+library(here)
+library(knitr)
+library(dplyr)
+
+library(readxl)
+data <- read_excel(here("data", "2021-05-05", "SSID Europe Database V1.0.xlsx"), sheet = "Master Merge")
+data <- as_tibble(data)
+data <- data[c("GroupID", "LocationID", "Lockdown", "ISOPleasant", "ISOEventful", "Human", "Traffic", "Natural", init_features)]
+
+data <- rename(data, "N5" = "Loudness_N5(soneGF)")
+data <- rename(data, "S" = "Sharpness_S(acum)")
+data <- rename(data, "R" = "Rough_HM_R(asper)")
+data <- rename(data, "I" = "I_HM_I(iu)")
+data <- rename(data, "FS" = "FS_(vacil)")
+data <- rename(data, "LAeq" = "LAeq_L(A)(dB(SPL))")
+data <- rename(data, "LA10_LA90" = "LA10_LA90(dB(SPL))")
+data <- rename(data, "LCeq_LAeq" = "LCeq_LAeq(dB(SPL))")
+data <- rename(data, "SIL3" = "SIL3_Avg,arith(dB(SPL))")
+
+features <- c("N5", "S", "R", "I", "FS", "LAeq", "LA10_LA90", "LCeq_LAeq", "SIL3")
+feature_string <- paste(features, collapse = " + ")
+feature_string
+
+print("Full data table has dimensions: ")
+print(dim(data))
+kable(print(data))
+```
+
+```{r treat features, warning=FALSE, message=FALSE}
+data <- data %>% mutate_at(vars(GroupID, LocationID, Lockdown), funs(as.factor))
+data <- data %>% mutate_at(vars(c("ISOPleasant", "ISOEventful", "Traffic", "Human", "Natural", features)), funs(as.numeric))
+kable(head(data))
+```
+
+```{r, warning=FALSE, message=FALSE}
+prelockdownData <- data %>% filter(Lockdown == 1)
+lockdownData <- data %>% filter(Lockdown == 2)
+
+prelockdownData <- drop_na(prelockdownData)
+prelockdownData[c(features)] <- scale(prelockdownData[c(features)])
+
+# Train-test split
+library(groupdata2)
+set.seed(42)
+
+parts = partition(prelockdownData, p=0.2, cat_col="LocationID")
+
+train = parts[[2]]
+test = parts[[1]]
+kable(summary(train))
+```
+
+
+```{r soccer demo}
+library(glmmLasso)
+## generalized additive mixed model
+## grid for the smoothing parameter
+
+## center all metric variables so that also the starting values with glmmPQL are in the correct scaling
+
+lassoData<-data.frame(prelockdownData)
+control=glmerControl(optimizer="bobyqa",optCtrl=list(maxfun=2e5))
+
+lambda <- seq(1000,0,by=-5)
+
+family = gaussian(link = identity)
+
+
+################## First Simple Method ############################################
+## Using BIC (or AIC, respectively) to determine the optimal tuning parameter lambda
+
+BIC_vec<-rep(Inf,length(lambda))
+
+## first fit good starting model
+library(MASS);library(nlme)
+PQL<-glmmPQL(ISOPleasant~1,random = ~1|LocationID,family=family,data=lassoData, control = control)
+Delta.start<-c(as.numeric(PQL$coef$fixed),rep(0,6),as.numeric(t(PQL$coef$random$LocationID)))
+Q.start<-as.numeric(VarCorr(PQL)[1,1])
+
+for(j in 1:length(lambda))
+{
+print(paste("Iteration ", j,sep=""))
+  
+glm1 <- try(glmmLasso(ISOPleasant~N5 + S + R + I + FS + LAeq + LA10_LA90 + LCeq_LAeq + SIL3, 
+                      rnd = list(LocationID=~1),  
+        family = family, data = lassoData, lambda=lambda[j],switch.NR=T,final.re=TRUE,
+        control=list(start=Delta.start,q_start=Q.start)), silent=TRUE)  
+
+
+if(class(glm1)!="try-error")
+{  
+BIC_vec[j]<-glm1$bic
+}
+        
+}
+    
+opt<-which.min(BIC_vec)
+        
+glm1_final <- glmmLasso(ISOPleasant~N5 + S + R + I + FS + LAeq + LA10_LA90 + LCeq_LAeq + SIL3, rnd = list(LocationID=~1),  
+        family = family, data = lassoData, lambda=lambda[opt],switch.NR=F,final.re=TRUE,
+        control=list(start=Delta.start,q_start=Q.start))
+         
+  
+        
+summary(glm1_final)
+
+
+```
+
+
+```{r}
+
+
+
+
+################## Second Simple Method ###########################
+## Using 5-fold CV to determine the optimal tuning parameter lambda
+
+### set seed
+set.seed(123)
+N<-dim(soccer)[1]
+ind<-sample(N,N)
+lambda <- seq(500,0,by=-5)
+
+kk<-5
+nk <- floor(N/kk)
+
+Devianz_ma<-matrix(Inf,ncol=kk,nrow=length(lambda))
+
+## first fit good starting model
+library(MASS);library(nlme)
+PQL<-glmmPQL(points~1,random = ~1|team,family=family,data=soccer)
+Delta.start<-c(as.numeric(PQL$coef$fixed),rep(0,6),as.numeric(t(PQL$coef$random$team)))
+Q.start<-as.numeric(VarCorr(PQL)[1,1])
+
+
+for(j in 1:length(lambda))
+{
+print(paste("Iteration ", j,sep=""))
+  
+  for (i in 1:kk)
+  {
+    if (i < kk)
+    {
+    indi <- ind[(i-1)*nk+(1:nk)]
+    }else{
+    indi <- ind[((i-1)*nk+1):N]
+    }
+  
+soccer.train<-soccer[-indi,]
+soccer.test<-soccer[indi,]
+  
+glm2 <- try(glmmLasso(points~transfer.spendings  
+        + ave.unfair.score  + ball.possession
+        + tackles + ave.attend + sold.out, rnd = list(team=~1),  
+        family = family, data = soccer.train, lambda=lambda[j],switch.NR=F,final.re=TRUE,
+        control=list(start=Delta.start,q_start=Q.start))
+        ,silent=TRUE) 
+        
+    if(class(glm2)!="try-error")
+    {  
+    y.hat<-predict(glm2,soccer.test)    
+
+    Devianz_ma[j,i]<-sum(family$dev.resids(soccer.test$points,y.hat,wt=rep(1,length(y.hat))))
+    }
+}
+print(sum(Devianz_ma[j,]))
+}
+    
+Devianz_vec<-apply(Devianz_ma,1,sum)
+opt2<-which.min(Devianz_vec)
+       
+       
+glm2_final <- glmmLasso(points~transfer.spendings  
+                        + ave.unfair.score + ball.possession
+                        + tackles + ave.attend + sold.out, rnd = list(team=~1),  
+                        family = family, data = soccer, lambda=lambda[opt2],switch.NR=F,final.re=TRUE,
+                        control=list(start=Delta.start,q_start=Q.start))
+
+
+
+summary(glm2_final)
+
+
+################## More Elegant Method ############################################
+## Idea: start with big lambda and use the estimates of the previous fit (BUT: before
+## the final re-estimation Fisher scoring is performed!) as starting values for the next fit;
+## make sure, that your lambda sequence starts at a value big enough such that all covariates are
+## shrinked to zero;
+
+## Using BIC (or AIC, respectively) to determine the optimal tuning parameter lambda
+lambda <- seq(500,0,by=-5)
+
+
+BIC_vec<-rep(Inf,length(lambda))
+family = poisson(link = log)
+
+# specify starting values for the very first fit; pay attention that Delta.start has suitable length! 
+Delta.start<-as.matrix(t(rep(0,7+23)))
+Q.start<-0.1  
+
+for(j in 1:length(lambda))
+{
+  print(paste("Iteration ", j,sep=""))
+  
+  glm3 <- glmmLasso(points~1 +transfer.spendings
+                    + ave.unfair.score 
+                    + tackles  
+                    + sold.out 
+                    + ball.possession
+                    + ave.attend
+                    ,rnd = list(team=~1),  
+                    family = family, data = soccer, 
+                    lambda=lambda[j], switch.NR=F,final.re=TRUE,
+                    control = list(start=Delta.start[j,],q_start=Q.start[j]))  
+  
+  print(colnames(glm3$Deltamatrix)[2:7][glm3$Deltamatrix[glm3$conv.step,2:7]!=0])
+  BIC_vec[j]<-glm3$bic
+  Delta.start<-rbind(Delta.start,glm3$Deltamatrix[glm3$conv.step,])
+  Q.start<-c(Q.start,glm3$Q_long[[glm3$conv.step+1]])
+}
+
+opt3<-which.min(BIC_vec)
+
+glm3_final <- glmmLasso(points~transfer.spendings + ave.unfair.score 
+                        + ball.possession
+                        + tackles + ave.attend + sold.out, rnd = list(team=~1),  
+                        family = family, data = soccer, lambda=lambda[opt3],
+                        switch.NR=F,final.re=TRUE,
+                        control = list(start=Delta.start[opt3,],q_start=Q.start[opt3]))  
+
+
+summary(glm3_final)
+
+## plot coefficient paths
+par(mar=c(6,6,4,4))
+plot(lambda,Delta.start[2:(length(lambda)+1),2],type="l",ylim=c(-1e-1,1e-1),ylab=expression(hat(beta[j])))
+lines(c(-1000,1000),c(0,0),lty=2)
+for(i in 3:7){
+  lines(lambda[1:length(lambda)],Delta.start[2:(length(lambda)+1),i])
+}
+abline(v=lambda[opt3],lty=2)
+
+```
+
+
+```{r GLMMLasso Pleasant}
+library(lme4)
+library(afex)
+# library(RePsychLink)
+library(glmmLasso)
+library(dplyr)
+library(tidyr)
+library(MASS)
+library(nlme)
+library(emmeans)
+library(tibble)
+library(caret)
+library(ggpubr)
+
+set.seed(42)
+
+lassoData <- drop_na(prelockdownData)
+
+# five-fold cross validation
+train.control.CV5 <- trainControl(method="cv", number=5)
+# range of lambdas to check
+Lambda.Range = 10^seq(-3,3,length=100)
+
+# Run our LASSO model, testing all possible interactions
+Lasso <- train(ISOPleasant ~ N5*S*R*I*FS*LAeq*LA10_LA90*LCeq_LAeq*SIL3, data=lassoData, method="glmnet", metric="RMSE", trControl=train.control.CV5, lambda=Lambda.Range, tuneGrid=expand.grid(alpha=1, lambda=Lambda.Range)) #alpha=1 means LASSO
+
+Lasso.Data <- tibble(Lambda=Lasso$finalModel$lambda,
+                     N5.z=coef(Lasso$finalModel)[2,],
+                     S.z=coef(Lasso$finalModel)[3,],
+                     R.z=coef(Lasso$finalModel)[4,],
+                     I.z=coef(Lasso$finalModel)[5,],
+                     FS.z=coef(Lasso$finalModel)[6,],
+                     LAeq.z=coef(Lasso$finalModel)[7,],
+                     LA10_LA90.z=coef(Lasso$finalModel)[8,],
+                     LC_LA.z=coef(Lasso$finalModel)[9,],
+                     SIL3.z=coef(Lasso$finalModel)[10,]) %>% gather(Variables, Coef, N5.z:SIL3.z)
+
+#set up this DF for the plots
+Lasso.Fit <- tibble(lambda=Lasso$results$lambda,
+                    RMSE=Lasso$results$RMSE,
+                    R2=Lasso$results$Rsquared)
+
+#Plots of results
+Coef.Plot <- ggplot(Lasso.Data, aes(Lambda, Coef, group=Variables))+
+    geom_smooth(aes(color=Variables), method="loess", se=FALSE)+
+    scale_x_log10(
+        breaks=scales::trans_breaks("log10", function(x) 10^x),
+        labels=scales::trans_format("log10", scales::math_format(10^.x))
+    )+
+    xlab("Lambda")+theme_bw()
+
+RMSE.Plot <- ggplot(Lasso.Fit, aes(lambda, RMSE))+
+    geom_smooth(method="loess", se=FALSE)+
+    scale_x_log10(
+        breaks=scales::trans_breaks("log10", function(x) 10^x),
+        labels=scales::trans_format("log10", scales::math_format(10^.x))
+    )+
+    xlab("Lambda")+theme_bw()
+
+R2.Plot <- ggplot(Lasso.Fit, aes(lambda, R2))+
+    geom_smooth(method="loess", se=FALSE)+
+    scale_x_log10(
+        breaks=scales::trans_breaks("log10", function(x) 10^x),
+        labels=scales::trans_format("log10", scales::math_format(10^.x))
+    )+
+    xlab("Lambda")+theme_bw()
+
+ggarrange(Coef.Plot,
+          ggarrange(RMSE.Plot, R2.Plot, ncol=2, labels=c("B","C")),
+          nrow=2,
+          labels="A"
+)
+
+
+
+```
+
+```{r}
+# round(coef(Lasso$finalModel, Lasso$finalModel$lambdaOpt), 4)
+
+```
+
+## lmmLasso according to Finch, Bolin & Kelley
+
+```{r, warning=FALSE}
+library(glmmLasso)
+mod <- glmmLasso(ISOPleasant ~ N5 + S + R + I + FS + LA10_LA90, rnd = list(LocationID=~1 + N5 + S + R), family=gaussian(), lambda=10, data=lassoData)
+summary(mod)
+
+```
+
+
+## glmmLasso
+
+```{r, message=FALSE, warning=FALSE}
+
+## generalized additive mixed model
+## grid for the smoothing parameter
+
+## center all metric variables so that also the starting values with glmmPQL are in the correct scaling
+
+lambda <- seq(500, 0, by=-5)
+family = gaussian(link=identity)
+
+################## Second Simple Method ################
+## Using 5-fold CV to determine the optimal tuning parameter lambda
+
+set.seed(42)
+
+N <- dim(lassoData)[1]
+ind <- sample(N, N)
+
+kk <- 5
+nk <- floor(N/kk)
+
+Devianz_ma <- matrix(Inf, ncol=kk, nrow=length(lambda))
+
+## first fit good starting model
+library(MASS); library(nlme)
+PQL <- glmmPQL(ISOPleasant~1, random = ~1|LocationID, family=family, data=lassoData)
+Delta.start <- c(as.numeric(PQL$coef$fixed), rep(0,9), as.numeric(t(PQL$coef$random$LocationID)))
+Q.start <- as.numeric(VarCorr(PQL)[1,1])
+
+for(j in 1:length(lambda))
+{
+print(paste("Iteration ", j,sep=""))
+  
+  for (i in 1:kk)
+  {
+    if (i < kk)
+    {
+    indi <- ind[(i-1)*nk+(1:nk)]
+    }else{
+    indi <- ind[((i-1)*nk+1):N]
+    }
+  
+lassoData.train<-lassoData[-indi,]
+lassoData<-lassoData[indi,]
+  
+glm2 <- try(glmmLasso(ISOPleasant~ N5 + S + R + I + FS + LAeq + LA10_LA90 + LCeq_LAeq + SIL3, 
+                      rnd = list(LocationID=~1),  
+                      family = family, data = lassoData.train, 
+                      lambda=lambda[j],switch.NR=F,final.re=TRUE,
+                      control=list(start=Delta.start,q_start=Q.start))
+            ,silent=TRUE) 
+        
+    if(class(glm2)!="try-error")
+    {  
+    y.hat<-predict(glm2,lassoData.test)    
+
+    Devianz_ma[j,i]<-sum(family$dev.resids(lassoData.test$ISOPleasant,y.hat,wt=rep(1,length(y.hat))))
+    }
+}
+print(sum(Devianz_ma[j,]))
+}
+
+
+Devianz_vec<-apply(Devianz_ma,1,sum)
+opt2<-which.min(Devianz_vec)
+       
+#        
+# glm2_final <- glmmLasso(ISOPleasant~N5 + S + R + I + FS + LAeq + LA10_LA90 + LCeq_LAeq + SIL3, 
+#                         rnd = list(LocationID=~1),  
+#                         family = family, data = lassoData, lambda=lambda[opt2],switch.NR=F,final.re=TRUE,
+#                         control=list(start=Delta.start,q_start=Q.start))
+# 
+# summary(glm2_final)
+```
+
+
+
+
+
