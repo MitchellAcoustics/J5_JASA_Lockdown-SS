@@ -90,6 +90,11 @@ features <- c("N5", "S", "R", "I", "FS", "LAeq", "LA10_LA90", "LCeq_LAeq", "SIL3
 feature_string <- paste(features, collapse = " + ")
 feature_string
 
+locations <- c("CamdenTown", "EustonTap", "MarchmontGarden", "MonumentoGaribaldi", "PancrasLock", "RegentsParkFields", "RegentsParkJapan", "RussellSq", "SanMarco", "StPaulsCross", "StPaulsRow", "TateModern", "TorringtonSq")
+
+data <- data %>% 
+    filter(LocationID %in% locations)
+
 print("Full data table has dimensions: ")
 print(dim(data))
 kable(print(data))
@@ -170,7 +175,6 @@ Pleasant_model <- lmerTest::get_model(step_Pleasant_model)
 # Pleasant_model <- lmerTest::step(Pleasant_formula, data = prelockdownData, REML=FALSE)
 summary(Pleasant_model)
 car::vif(Pleasant_model)
-
 ```
 Since LAeq and SIL3 have a VIF > 10, we will remove one of them to decrease the multicollinearity. 
 
@@ -178,7 +182,6 @@ Since LAeq and SIL3 have a VIF > 10, we will remove one of them to decrease the 
 Pleasant_model <- lmerTest::lmer(ISOPleasant ~ S + SIL3 + (N5 + R | LocationID), data=train)
 summary(Pleasant_model)
 car::vif(Pleasant_model)
-
 ```
 
 ```{r}
@@ -187,6 +190,39 @@ sjPlot::plot_model(Pleasant_model, type="re", title = "Random effects - Pleasant
 sjPlot::plot_model(Pleasant_model, show.values = TRUE)
 
 kable(MuMIn::r.squaredGLMM(Pleasant_model))
+```
+
+### Generating predictions and evaluating for training and test set
+
+```{r}
+library(ModelMetrics)
+library(ggplot2)
+library(gridExtra)
+train$ISOPleasant.pred <- predict(Pleasant_model)
+test$ISOPleasant.pred <- predict(Pleasant_model, newdata=test)
+
+# Calculate the normalised RMSE
+train_nrmse <- rmse(train$ISOPleasant.pred, train$ISOPleasant) / 2
+test_nrmse <- rmse(test$ISOPleasant.pred, test$ISOPleasant) / 2
+
+# Plot predicted vs actual
+test_title <- glue("Test Set (NRMSE=", round(test_nrmse, 3), ")", sep="")
+test_plot <- ggplot(test, aes(x = ISOPleasant.pred, y = ISOPleasant, colour=LocationID)) +
+    geom_point() +
+    geom_abline(intercept=0, slope=1) +
+    labs(x = 'Predicted Values', y = 'Actual Values', title = test_title) +
+    coord_fixed() +
+    theme(legend.position="none")
+
+train_title <- glue("Train Set (NRMSE=", round(train_nrmse, 3), ")", sep="")
+train_plot <- ggplot(train, aes(x = ISOPleasant.pred, y = ISOPleasant, colour=LocationID)) +
+    geom_point() +
+    geom_abline(intercept=0, slope=1) +
+    labs(x = 'Predicted Values', y = 'Actual Values', title = train_title) +
+    coord_fixed() +
+    theme(legend.position="none")
+
+grid.arrange(train_plot, test_plot, nrow=1)
 ```
 
 ## Eventful Model
@@ -201,14 +237,47 @@ kable(step_Eventful_model$fixed)
 kable(step_Eventful_model$random)
 ```
 
-```{r, warning=FALSE, message=FALSE}
+```{r}
 Eventful_model <- lmerTest::get_model(step_Eventful_model)
+summary(Eventful_formula)
+car::vif(Eventful_model)
 
+```
 
+```{r, warning=FALSE, message=FALSE}
 sjPlot::tab_model(Eventful_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
 sjPlot::plot_model(Eventful_model, type="re", title = "Random effects - Eventful", show.values = TRUE)
 sjPlot::plot_model(Eventful_model, show.values = TRUE)
 kable(MuMIn::r.squaredGLMM(Eventful_model))
+```
+
+```{r}
+train$ISOEventful.pred <- predict(Eventful_model)
+test$ISOEventful.pred <- predict(Eventful_model, newdata=test)
+
+# Calculate the normalised RMSE
+train_nrmse <- rmse(train$ISOEventful.pred, train$ISOEventful) / 2
+test_nrmse <- rmse(test$ISOEventful.pred, test$ISOEventful) / 2
+
+# Plot predicted vs actual
+test_title <- glue("Test Set (NRMSE=", round(test_nrmse, 3), ")", sep="")
+test_plot <- ggplot(test, aes(x = ISOEventful.pred, y = ISOEventful, colour=LocationID)) +
+    geom_point() +
+    geom_abline(intercept=0, slope=1) +
+    labs(x = 'Predicted Values', y = 'Actual Values', title = test_title) +
+    coord_fixed() +
+    theme(legend.position="none")
+
+train_title <- glue("Train Set (NRMSE=", round(train_nrmse, 3), ")", sep="")
+train_plot <- ggplot(train, aes(x = ISOEventful.pred, y = ISOEventful, colour=LocationID)) +
+    geom_point() +
+    geom_abline(intercept=0, slope=1) +
+    labs(x = 'Predicted Values', y = 'Actual Values', title = train_title) +
+    coord_fixed() +
+    theme(legend.position="none")
+
+grid.arrange(train_plot, test_plot, nrow=1)
+
 ```
 
 ## Natural Model
@@ -218,18 +287,51 @@ Natural_formula <- as.formula(glue("Natural ~ 1 + ", feature_string, " + (1 + ",
 
 init_Natural_model <- lmerTest::lmer(Natural_formula, data = train)
 
-step_Natural_model <- lmerTest::step(init_Natural_model, data = train)
+step_Natural_model <- lmerTest::step(init_Natural_model)
 kable(step_Natural_model$fixed)
 kable(step_Natural_model$random)
 ```
 
-```{r, warning=FALSE, message=FALSE}
+```{r}
 Natural_model <- lmerTest::get_model(step_Natural_model)
+summary(Natural_model)
+car::vif(Natural_model)
+```
 
+```{r, warning=FALSE, message=FALSE}
 sjPlot::tab_model(Natural_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
 sjPlot::plot_model(Natural_model, type="re", title = "Random effects - Natural", show.values = TRUE)
 sjPlot::plot_model(Natural_model, show.values = TRUE)
 kable(MuMIn::r.squaredGLMM(Natural_model))
+```
+
+```{r}
+train$Natural.pred <- predict(Natural_model)
+test$Natural.pred <- predict(Natural_model, newdata=test)
+
+# Calculate the normalised RMSE
+train_nrmse <- rmse(train$Natural.pred, train$Natural) / 2
+test_nrmse <- rmse(test$Natural.pred, test$Natural) / 2
+
+# Plot predicted vs actual
+test_title <- glue("Test Set (NRMSE=", round(test_nrmse, 3), ")", sep="")
+test_plot <- ggplot(test, aes(x = Natural.pred, y = Natural, colour=LocationID)) +
+    geom_point() +
+    geom_abline(intercept=0, slope=1) +
+    labs(x = 'Predicted Values', y = 'Actual Values', title = test_title) +
+    coord_fixed() +
+    theme(legend.position="none")
+
+train_title <- glue("Train Set (NRMSE=", round(train_nrmse, 3), ")", sep="")
+train_plot <- ggplot(train, aes(x = Natural.pred, y = Natural, colour=LocationID)) +
+    geom_point() +
+    geom_abline(intercept=0, slope=1) +
+    labs(x = 'Predicted Values', y = 'Actual Values', title = train_title) +
+    coord_fixed() +
+    theme(legend.position="none")
+
+grid.arrange(train_plot, test_plot, nrow=1)
+
 ```
 
 ## Traffic Model
