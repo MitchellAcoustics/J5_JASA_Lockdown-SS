@@ -97,7 +97,7 @@ data <- data %>%
 
 print("Full data table has dimensions: ")
 print(dim(data))
-kable(print(data))
+kable(print(head(data)))
 ```
 
 
@@ -140,7 +140,7 @@ prelockdownData <- data %>% filter(Lockdown == 1)
 lockdownData <- data %>% filter(Lockdown == 2)
 
 prelockdownData <- drop_na(prelockdownData)
-prelockdownData[c(features)] <- scale(prelockdownData[c(features)])
+# prelockdownData[c(features)] <- scale(prelockdownData[c(features)])
 
 # Train-test split
 library(groupdata2)
@@ -157,223 +157,137 @@ kable(summary(train))
 kable(summary(test))
 ```
 
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+model.building <- function(target, features, train, test, grp="LocationID", exclude.features = NULL, print.step.summ = FALSE, scale=TRUE, ...) {
+    if (!require("pacman")) install.packages("pacman")
+    pacman::p_load(lmerTest, glue, knitr, car, sjPlot, MuMIn, ggplot2, gridExtra, ModelMetrics)
+    # Remove the excluded features from the feature vector
+    if (length(exclude.features)>=1) {
+        features <- grep(paste0(exclude.features, collapse = "|"), features, invert=TRUE, value=TRUE)
+    }
+    features.string <- paste(features, collapse = " + ")
+    formula <- as.formula(glue(target, " ~ 1 + ", features.string, " + (1 + ", features.string, "|", grp, ")"))
+    
+    train.data <- train
+    test.data <- test
+    if (scale) {
+        train.data[c(features)] <- scale(train.data[c(features)])
+    }
+    
+    # Fit initial model and run stepwise feature selection
+    init.model <- lmer(formula, data=train.data)
+    print(typeof(train.data))
+    step.model <- step(init.model, data=train.data, reduce.random=TRUE)
+    scaled.model <- get_model(step.model)
+    formula <- formula(scaled.model)
+
+    model <- lmer(formula, data=train)
+    
+    if (print.step.summ) {
+        print(step.model$fixed)
+        print(step.model$random)
+        print(summary(model))
+    }
+
+    # kable(vif(model))
+    
+    # print(tab_model(model, show.icc=TRUE, collapse.ci=TRUE, show.aic=TRUE))
+    print(plot_model(model, type="re", title=glue("Random effects - ", target), show.values=TRUE))
+    print(plot_model(model, show.values=TRUE))
+    
+    print(r.squaredGLMM(model))
+    
+    # Generating predictions and evaluating for training and test set
+    pred.results <- pred.plots(model, target, train.data, test.data, grp=grp)
+    
+    results <- list("step.results" = step.model, "model" = model, "pred.results"= pred.results, "scaled.model"=scaled.model)
+}
+
+pred.plots <- function(model, target, train.data, test.data, grp="LocationID") {
+    if (!require("pacman")) install.packages("pacman")
+    pacman::p_load(knitr, ModelMetrics, gridExtra, ggplot2, glue)
+    
+    train.pred <- train.data[grp]
+    train.pred$actual <- train.data[target][[1]]
+    train.pred$pred <- predict(model)
+    
+    test.pred <- test.data[grp]
+    test.pred$actual <- test.data[target][[1]]
+    test.pred$pred <- predict(model, newdata=test.data)
+    
+    # Calculate the normalised RMSE
+    # range <- abs(max(train.pred$actual) - min(train.pred$actual))
+    train.mae <- mae(train.pred$pred, train.pred$actual)
+    test.mae <- mae(test.pred$pred, test.pred$actual)
+
+    # Plot predicted vs actual
+    test.title <- glue("Test Set (MAE=", round(test.mae, 3), ")", sep="")
+    test.plot <- ggplot(test.pred, aes(x=pred, y=actual, colour=LocationID)) +
+        geom_point() +
+        geom_abline(intercept=0, slope=1) + 
+        labs(x = 'Predicted Values', y='Actual Values', title=test.title)+
+        coord_fixed() +
+        theme(legend.position="none")
+    
+    train.title <- glue("Train Set (MAE=", round(train.mae, 3), ")", sep="")
+    train.plot <- ggplot(train.pred, aes(x=pred, y=actual, colour=LocationID)) +
+        geom_point() +
+        geom_abline(intercept=0, slope=1) + 
+        labs(x = 'Predicted Values', y='Actual Values', title=train.title) +
+        coord_fixed() +
+        theme(legend.position="none")
+    grid.arrange(train.plot, test.plot, nrow=1)
+    
+    results <- list("train.pred" = train.pred, "test.pred" = test.pred, "test.mae" = test.mae, "train.mae" = train.mae)
+}
+
+```
+
+
 ## Pleasant Model
+When this feature selection is performed with the entire feature set, it includes both LAeq and SIL3 at the end, which have a VIF > 10. Therefore, we remove one of them (LAeq) at the start before the feature selection is performed. 
 
-```{r pleasant feature selection, warning=FALSE, message=FALSE}
-
-Pleasant_formula <- as.formula(glue("ISOPleasant ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
-
-init_Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = train)
-
-step_Pleasant_model <- lmerTest::step(init_Pleasant_model, data = train, reduce.random=TRUE)
-kable(step_Pleasant_model$fixed)
-kable(step_Pleasant_model$random)
+```{r, message=FALSE, warning=FALSE}
+Pleasant.results <- model.building(target="ISOPleasant", features = features, train = train, test = test, grp="LocationID", exclude.features = c("LAeq"))
 ```
 
-```{r, warning=FALSE, message=FALSE}
-Pleasant_model <- lmerTest::get_model(step_Pleasant_model)
-# Pleasant_model <- lmerTest::step(Pleasant_formula, data = prelockdownData, REML=FALSE)
-summary(Pleasant_model)
-car::vif(Pleasant_model)
-```
-Since LAeq and SIL3 have a VIF > 10, we will remove one of them to decrease the multicollinearity. 
-
-```{r}
-Pleasant_model <- lmerTest::lmer(ISOPleasant ~ S + SIL3 + (N5 + R | LocationID), data=train)
-summary(Pleasant_model)
-car::vif(Pleasant_model)
-```
-
-```{r}
-sjPlot::tab_model(Pleasant_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
-sjPlot::plot_model(Pleasant_model, type="re", title = "Random effects - Pleasant", show.values = TRUE)
-sjPlot::plot_model(Pleasant_model, show.values = TRUE)
-
-kable(MuMIn::r.squaredGLMM(Pleasant_model))
-```
-
-### Generating predictions and evaluating for training and test set
-
-```{r}
-library(ModelMetrics)
-library(ggplot2)
-library(gridExtra)
-train$ISOPleasant.pred <- predict(Pleasant_model)
-test$ISOPleasant.pred <- predict(Pleasant_model, newdata=test)
-
-# Calculate the normalised RMSE
-train_nrmse <- rmse(train$ISOPleasant.pred, train$ISOPleasant) / 2
-test_nrmse <- rmse(test$ISOPleasant.pred, test$ISOPleasant) / 2
-
-# Plot predicted vs actual
-test_title <- glue("Test Set (NRMSE=", round(test_nrmse, 3), ")", sep="")
-test_plot <- ggplot(test, aes(x = ISOPleasant.pred, y = ISOPleasant, colour=LocationID)) +
-    geom_point() +
-    geom_abline(intercept=0, slope=1) +
-    labs(x = 'Predicted Values', y = 'Actual Values', title = test_title) +
-    coord_fixed() +
-    theme(legend.position="none")
-
-train_title <- glue("Train Set (NRMSE=", round(train_nrmse, 3), ")", sep="")
-train_plot <- ggplot(train, aes(x = ISOPleasant.pred, y = ISOPleasant, colour=LocationID)) +
-    geom_point() +
-    geom_abline(intercept=0, slope=1) +
-    labs(x = 'Predicted Values', y = 'Actual Values', title = train_title) +
-    coord_fixed() +
-    theme(legend.position="none")
-
-grid.arrange(train_plot, test_plot, nrow=1)
-```
 
 ## Eventful Model
 
-```{r, warning=FALSE, message=FALSE}
-Eventful_formula <- as.formula(glue("ISOEventful ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
-
-init_Eventful_model <- lmerTest::lmer(Eventful_formula, data = train)
-
-step_Eventful_model <- lmerTest::step(init_Eventful_model, data = train)
-kable(step_Eventful_model$fixed)
-kable(step_Eventful_model$random)
+```{r, message=FALSE, warning=FALSE}
+Eventful.results <- model.building(target="ISOEventful", features = features, train = train, test = test, grp="LocationID")
 ```
 
 ```{r}
-Eventful_model <- lmerTest::get_model(step_Eventful_model)
-summary(Eventful_formula)
-car::vif(Eventful_model)
-
-```
-
-```{r, warning=FALSE, message=FALSE}
-sjPlot::tab_model(Eventful_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
-sjPlot::plot_model(Eventful_model, type="re", title = "Random effects - Eventful", show.values = TRUE)
-sjPlot::plot_model(Eventful_model, show.values = TRUE)
-kable(MuMIn::r.squaredGLMM(Eventful_model))
-```
-
-```{r}
-train$ISOEventful.pred <- predict(Eventful_model)
-test$ISOEventful.pred <- predict(Eventful_model, newdata=test)
-
-# Calculate the normalised RMSE
-train_nrmse <- rmse(train$ISOEventful.pred, train$ISOEventful) / 2
-test_nrmse <- rmse(test$ISOEventful.pred, test$ISOEventful) / 2
-
-# Plot predicted vs actual
-test_title <- glue("Test Set (NRMSE=", round(test_nrmse, 3), ")", sep="")
-test_plot <- ggplot(test, aes(x = ISOEventful.pred, y = ISOEventful, colour=LocationID)) +
-    geom_point() +
-    geom_abline(intercept=0, slope=1) +
-    labs(x = 'Predicted Values', y = 'Actual Values', title = test_title) +
-    coord_fixed() +
-    theme(legend.position="none")
-
-train_title <- glue("Train Set (NRMSE=", round(train_nrmse, 3), ")", sep="")
-train_plot <- ggplot(train, aes(x = ISOEventful.pred, y = ISOEventful, colour=LocationID)) +
-    geom_point() +
-    geom_abline(intercept=0, slope=1) +
-    labs(x = 'Predicted Values', y = 'Actual Values', title = train_title) +
-    coord_fixed() +
-    theme(legend.position="none")
-
-grid.arrange(train_plot, test_plot, nrow=1)
+sjPlot::tab_model(Pleasant.results$model, Eventful.results$model)
+sjPlot::tab_model(Pleasant.results$scaled.model, Eventful.results$scaled.model)
+sjPlot::plot_models(Pleasant.results$scaled.model, Eventful.results$scaled.model, std.est='std', show.values = TRUE)
 
 ```
 
 ## Natural Model
 
-```{r, warning=FALSE, message=FALSE}
-Natural_formula <- as.formula(glue("Natural ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
-
-init_Natural_model <- lmerTest::lmer(Natural_formula, data = train)
-
-step_Natural_model <- lmerTest::step(init_Natural_model)
-kable(step_Natural_model$fixed)
-kable(step_Natural_model$random)
-```
-
-```{r}
-Natural_model <- lmerTest::get_model(step_Natural_model)
-summary(Natural_model)
-car::vif(Natural_model)
-```
-
-```{r, warning=FALSE, message=FALSE}
-sjPlot::tab_model(Natural_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
-sjPlot::plot_model(Natural_model, type="re", title = "Random effects - Natural", show.values = TRUE)
-sjPlot::plot_model(Natural_model, show.values = TRUE)
-kable(MuMIn::r.squaredGLMM(Natural_model))
-```
-
-```{r}
-train$Natural.pred <- predict(Natural_model)
-test$Natural.pred <- predict(Natural_model, newdata=test)
-
-# Calculate the normalised RMSE
-train_nrmse <- rmse(train$Natural.pred, train$Natural) / 2
-test_nrmse <- rmse(test$Natural.pred, test$Natural) / 2
-
-# Plot predicted vs actual
-test_title <- glue("Test Set (NRMSE=", round(test_nrmse, 3), ")", sep="")
-test_plot <- ggplot(test, aes(x = Natural.pred, y = Natural, colour=LocationID)) +
-    geom_point() +
-    geom_abline(intercept=0, slope=1) +
-    labs(x = 'Predicted Values', y = 'Actual Values', title = test_title) +
-    coord_fixed() +
-    theme(legend.position="none")
-
-train_title <- glue("Train Set (NRMSE=", round(train_nrmse, 3), ")", sep="")
-train_plot <- ggplot(train, aes(x = Natural.pred, y = Natural, colour=LocationID)) +
-    geom_point() +
-    geom_abline(intercept=0, slope=1) +
-    labs(x = 'Predicted Values', y = 'Actual Values', title = train_title) +
-    coord_fixed() +
-    theme(legend.position="none")
-
-grid.arrange(train_plot, test_plot, nrow=1)
-
+```{r, message=FALSE, warning=FALSE}
+Natural.results <- model.building(target="Natural", features = features, train = train, test = test, grp="LocationID")
 ```
 
 ## Traffic Model
 
-```{r, warning=FALSE, message=FALSE}
-Traffic_formula <- as.formula(glue("Traffic ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
-
-init_Traffic_model <- lmerTest::lmer(Traffic_formula, data = train)
-
-step_Traffic_model <- lmerTest::step(init_Traffic_model, data = train)
-kable(step_Traffic_model$fixed)
-kable(step_Traffic_model$random)
-```
-
-```{r, warning=FALSE, message=FALSE}
-Traffic_model <- lmerTest::get_model(step_Traffic_model)
-
-sjPlot::tab_model(Traffic_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
-sjPlot::plot_model(Traffic_model, type="re", title = "Random effects - Traffic", show.values = TRUE)
-sjPlot::plot_model(Traffic_model, show.values = TRUE)
-kable(MuMIn::r.squaredGLMM(Traffic_model))
+```{r, message=FALSE, warning=FALSE}
+Traffic.results <- model.building(target="Traffic", features = features, train = train, test = test, grp="LocationID", exclude.features = c("SIL3"))
 ```
 
 ## Human Model
 
-```{r, warning=FALSE, message=FALSE}
-Human_formula <- as.formula(glue("Human ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
-
-init_Human_model <- lmerTest::lmer(Human_formula, data = train)
-
-step_Human_model <- lmerTest::step(init_Human_model, data = train)
-kable(step_Human_model$fixed)
-kable(step_Human_model$random)
+```{r, message=FALSE, warning=FALSE}
+Human.results <- model.building(target="Human", features = features, train = train, test = test, grp="LocationID")
 ```
 
-```{r, warning=FALSE, message=FALSE}
-Human_model <- lmerTest::get_model(step_Human_model)
+```{r}
+sjPlot::tab_model(Natural.results$model, Traffic.results$model, Human.results$model)
+sjPlot::tab_model(Natural.results$scaled.model, Traffic.results$scaled.model, Human.results$scaled.model)
+sjPlot::plot_models(Natural.results$model, Traffic.results$model, Human.results$model, std.est='std', show.values=TRUE)
 
-sjPlot::tab_model(Human_model, show.icc = TRUE, collapse.ci = TRUE, show.aic = TRUE)
-sjPlot::plot_model(Human_model, type="re", title = "Random effects - Traffic", show.values = TRUE)
-sjPlot::plot_model(Human_model, show.values = TRUE)
-kable(MuMIn::r.squaredGLMM(Human_model))
 ```
 
 ##### Tried an attempt at Cross-validation -> not successful
