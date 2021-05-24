@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+verbosity = 0
 ```
 
 ## Reporting
@@ -35,6 +36,8 @@ N/A
 
 The acoustic predictors are derived from the 30s binaural recordings taken during the SSID Protocol. The (psycho)acoustic metrics considered are:
 
+-   Zwicker Psychoacoustic Annoyance ($PA$)
+
 -   Loudness ($N_5$, sones)
 
 -   Sharpness (acum)
@@ -45,6 +48,8 @@ The acoustic predictors are derived from the 30s binaural recordings taken durin
 
 -   Fluctuation Strength (vacil)
 
+-   Tonality (tuHMS)
+
 -   $L_{Aeq,30s}$ (dB)
 
 -   $L_{A10} - L_{A90}$ (dB)
@@ -53,11 +58,19 @@ The acoustic predictors are derived from the 30s binaural recordings taken durin
 
 -   Speech Interference Level ($SIL3_{50}$, dB) 
 
+The (psycho)acoustic predictors investigated were selected in order to describe many aspects of the recorded sound - in particular, the goal was to move beyond a focus on sound level. Three predictors (Loudness, LAeq, and SIL3) capture various aspects of the level of the sound, with LAeq representing the most common and traditional environmental acoustic metric, Loudness providing a more complex metric of the perception of the sound level, and SIL3 representing to what degree the ambient sound interferes wit casual conversation in the public space. Sharpness and LCeq-LAeq each describe aspects of the spectral content of the sound, with Sharpness describing the degree of high-frequency content and LCeq-LAeq capturing the degree of low-frequency content. LA10-LA90 attempts to describe the variability of the sound level over the recording period, essentially representing the level difference between the foreground sound and the background sound. Psychoacoustic Annoyance is calculated according to Zwicker (1999), as an empirically derived function of Loudness ($N_5$), Sharpness, Fluctuation Strength, and Roughness. 
+
+Each of these predictors was calculated from the 30s binaural recordings with Artemis. The maximum value from the left and right channels of the binaural recording are used, as suggested in ISO 12913-3. 
+
 ```{r predictors, warning=FALSE, message=FALSE}
-init_features <- c("Loudness_N5(soneGF)", "Sharpness_S(acum)", "Rough_HM_R(asper)", "I_HM_I(iu)", "FS_(vacil)", "LAeq_L(A)(dB(SPL))", "LA10_LA90(dB(SPL))", "LCeq_LAeq(dB(SPL))", "SIL3_Avg,arith(dB(SPL))")
+init_features <- c("PA(Zwicker)", "Loudness_N5(soneGF)", "Sharpness_S(acum)", "Rough_HM_R(asper)", "I_HM_I(iu)", "FS_(vacil)", "Ton_HM_Avg,arith(tuHMS)", "LAeq_L(A)(dB(SPL))", "LA10_LA90(dB(SPL))", "LCeq_LAeq(dB(SPL))", "SIL3_Avg,arith(dB(SPL))")
 init_feature_string <- paste(init_features, collapse = " + ")
 init_feature_string
 ```
+
+### 7b Report any actions to blind assessment of predictors for the outcome and other predictors.
+
+N/A
 
 ## Sample Size
 
@@ -72,21 +85,23 @@ library(knitr)
 library(dplyr)
 
 library(readxl)
-data <- read_excel(here("data", "2021-05-05", "SSID Europe Database V1.0.xlsx"), sheet = "Master Merge")
+data <- read_excel(here("data", "2021-05-18", "SSID Europe Database V1.0.xlsx"), sheet = "Master Merge")
 data <- as_tibble(data)
 data <- data[c("GroupID", "LocationID", "Lockdown", "ISOPleasant", "ISOEventful", "Human", "Traffic", "Natural", init_features)]
 
+data <- rename(data, "PA" = "PA(Zwicker)")
 data <- rename(data, "N5" = "Loudness_N5(soneGF)")
 data <- rename(data, "S" = "Sharpness_S(acum)")
 data <- rename(data, "R" = "Rough_HM_R(asper)")
 data <- rename(data, "I" = "I_HM_I(iu)")
 data <- rename(data, "FS" = "FS_(vacil)")
+data <- rename(data, "T" = "Ton_HM_Avg,arith(tuHMS)")
 data <- rename(data, "LAeq" = "LAeq_L(A)(dB(SPL))")
 data <- rename(data, "LA10_LA90" = "LA10_LA90(dB(SPL))")
-data <- rename(data, "LCeq_LAeq" = "LCeq_LAeq(dB(SPL))")
+data <- rename(data, "LC_LA" = "LCeq_LAeq(dB(SPL))")
 data <- rename(data, "SIL3" = "SIL3_Avg,arith(dB(SPL))")
 
-features <- c("N5", "S", "R", "I", "FS", "LAeq", "LA10_LA90", "LCeq_LAeq", "SIL3")
+features <- c("PA", "N5", "S", "R", "I", "FS", "T", "LAeq", "LA10_LA90", "LC_LA", "SIL3")
 feature_string <- paste(features, collapse = " + ")
 feature_string
 
@@ -95,11 +110,9 @@ locations <- c("CamdenTown", "EustonTap", "MarchmontGarden", "MonumentoGaribaldi
 data <- data %>% 
     filter(LocationID %in% locations)
 
-print("Full data table has dimensions: ")
-print(dim(data))
-kable(print(head(data)))
+print(glue("Full data table has dimensions: ", dim(data)[1], ", ", dim(data)[2]))
+kable(head(data))
 ```
-
 
 ## Missing Data
 
@@ -124,23 +137,31 @@ Only responses which have a corresponding recording are included in this dataset
 All predictors are numeric values, in the units described earlier. Before conducting feature selection, the input features are z-scaled to ensure proper comparison of their effect sizes. After the feature selection, when reporting the final fitted models, both scaled and unscaled coefficients will be reported.
 
 ```{r treat features, warning=FALSE, message=FALSE}
-data <- data %>% mutate_at(vars(GroupID, LocationID, Lockdown), funs(as.factor))
-data <- data %>% mutate_at(vars(c("ISOPleasant", "ISOEventful", "Traffic", "Human", "Natural", features)), funs(as.numeric))
+data <- data %>% mutate_at(vars(GroupID, LocationID, Lockdown, "Traffic", "Human", "Natural"), funs(as.factor))
+data <- data %>% mutate_at(vars(c("ISOPleasant", "ISOEventful", features)), funs(as.numeric))
 kable(head(data))
+```
+
+#### Internal predictors correlations
+
+```{r correlations, warning=FALSE}
+library(correlation)
+
+corrs <- correlation(data[features], multilevel=FALSE)
+s <- summary(corrs)
+display(s)
 ```
 
 ### 10b Specify type of model, all model-building procedures (including any predictor selection), and method for internal validation.
 
 #### Train-test split
 
-We use an 80/20 train/test split. The splits are balanced within each LocationID so that we are randomly sampling from each location equally.
+We use an 80/20 train/test split in order to evaluate the over- / under-fitting of the model. The splits are balanced within each LocationID so that we are randomly sampling from each location equally.
 
 ```{r, warning=FALSE, message=FALSE}
-prelockdownData <- data %>% filter(Lockdown == 1)
-lockdownData <- data %>% filter(Lockdown == 2)
-
+prelockdownData <- data %>% filter(Lockdown == 0)
+lockdownData <- data %>% filter(Lockdown == 1)
 prelockdownData <- drop_na(prelockdownData)
-# prelockdownData[c(features)] <- scale(prelockdownData[c(features)])
 
 # Train-test split
 library(groupdata2)
@@ -157,8 +178,12 @@ kable(summary(train))
 kable(summary(test))
 ```
 
+#### Feature Selection
+
+We use a forward-step feature selection process, where features are added one-by-one to the model and the best performing features are retained until no performance increase is observed. 
+
 ```{r, message=FALSE, warning=FALSE, echo=FALSE}
-model.building <- function(target, features, train, test, grp="LocationID", exclude.features = NULL, print.step.summ = FALSE, scale=TRUE, ...) {
+model.building <- function(target, features, train, test, grp="LocationID", exclude.features = NULL, scale=TRUE, plot = TRUE, print.loc.means = TRUE, verbose = 0, ...) {
     if (!require("pacman")) install.packages("pacman")
     pacman::p_load(lmerTest, glue, knitr, car, sjPlot, MuMIn, ggplot2, gridExtra, ModelMetrics)
     # Remove the excluded features from the feature vector
@@ -175,15 +200,17 @@ model.building <- function(target, features, train, test, grp="LocationID", excl
     }
     
     # Fit initial model and run stepwise feature selection
+    if (verbose > 0) {print("Fitting initial model.")}
     init.model <- lmer(formula, data=train.data)
-    print(typeof(train.data))
+    if (verbose > 0) {print("Performing Feature Selection")}
     step.model <- step(init.model, data=train.data, reduce.random=TRUE)
     scaled.model <- get_model(step.model)
     formula <- formula(scaled.model)
 
+    if (verbose > 0) {print("Fitting Final Model")}
     model <- lmer(formula, data=train)
     
-    if (print.step.summ) {
+    if (verbose > 1) {
         print(step.model$fixed)
         print(step.model$random)
         print(summary(model))
@@ -191,16 +218,29 @@ model.building <- function(target, features, train, test, grp="LocationID", excl
 
     # kable(vif(model))
     
-    # print(tab_model(model, show.icc=TRUE, collapse.ci=TRUE, show.aic=TRUE))
-    print(plot_model(model, type="re", title=glue("Random effects - ", target), show.values=TRUE))
-    print(plot_model(model, show.values=TRUE))
-    
-    print(r.squaredGLMM(model))
-    
-    # Generating predictions and evaluating for training and test set
-    pred.results <- pred.plots(model, target, train.data, test.data, grp=grp)
+    if (plot) {
+        # print(tab_model(model, show.icc=TRUE, collapse.ci=TRUE, show.aic=TRUE))
+        print(plot_model(scaled.model, type="re", title=glue("Random effects - ", target), show.values=TRUE))
+        print(plot_model(scaled.model, show.values=TRUE))
+        
+        print("Trained model MLM R-squared:")
+        print(r.squaredGLMM(model))
+        
+        # Generating predictions and evaluating for training and test set
+        pred.results <- pred.plots(model, target, train.data, test.data, grp=grp)
+        
+    }
     
     results <- list("step.results" = step.model, "model" = model, "pred.results"= pred.results, "scaled.model"=scaled.model)
+    means <- location.score(results, print=print.loc.means)
+    results[["train.means"]] = means$train.means
+    results[["test.means"]] = means$test.means
+    results[["train.loc.mae"]] = means$train.loc.mae
+    results[["train.loc.r2"]] = means$train.loc.r2
+    results[["test.loc.mae"]] = means$test.loc.mae
+    results[["test.loc.r2"]] = means$test.loc.r2
+    
+    results
 }
 
 pred.plots <- function(model, target, train.data, test.data, grp="LocationID") {
@@ -241,21 +281,62 @@ pred.plots <- function(model, target, train.data, test.data, grp="LocationID") {
     results <- list("train.pred" = train.pred, "test.pred" = test.pred, "test.mae" = test.mae, "train.mae" = train.mae)
 }
 
+location.score <- function(model.results, print=TRUE) {
+    pacman::p_load(dplyr, ModelMetrics, MLmetrics, glue)
+
+    pred.results <- model.results$pred.results
+    train.pred <- pred.results$train.pred
+    test.pred <- pred.results$test.pred
+    model <- model.results$model
+    
+    train.means <- train.pred %>% 
+        group_by(LocationID) %>%
+        summarise_at(vars(actual, pred), funs(mean(., na.rm=TRUE)))
+    test.means <- test.pred %>%
+        group_by(LocationID) %>%
+        summarise_at(vars(actual, pred), funs(mean(., na.rm=TRUE)))
+    
+    train.loc.mae <- mae(train.means$pred, train.means$actual)
+    train.loc.r2 <- R2_Score(train.means$pred, train.means$actual)
+
+    test.loc.mae <- mae(test.means$pred, test.means$actual)
+    test.loc.r2 <- R2_Score(test.means$pred, test.means$actual)
+    
+    if (print) {
+        print(glue("Train Location R^2: ", round(train.loc.r2, 3)))
+        print(glue("Test Location R^2:  ", round(test.loc.r2, 3)))
+    }
+    
+    results <- list(
+        "train.means" = train.means,
+        "test.means" = test.means,
+        "train.loc.mae" = train.loc.mae, 
+        "train.loc.r2" = train.loc.r2, 
+        "test.loc.mae" = test.loc.mae, 
+        "test.loc.r2" = test.loc.r2)
+}
+
 ```
 
 
 ## Pleasant Model
 When this feature selection is performed with the entire feature set, it includes both LAeq and SIL3 at the end, which have a VIF > 10. Therefore, we remove one of them (LAeq) at the start before the feature selection is performed. 
 
-```{r, message=FALSE, warning=FALSE}
-Pleasant.results <- model.building(target="ISOPleasant", features = features, train = train, test = test, grp="LocationID", exclude.features = c("LAeq"))
-```
+### Scores
 
+To score the performance of the training and testing sets, we use the Mean Absolute Error (MAE). This calculates the average distance between the predicted and actual responses of each individual in the train and test sets, telling us, on average, how close our prediction is. The MAE is in the scale of the response feature - for ISOPleasant this means our response can range from -1 to +1 and we are on average off by 0.258. The goal is to 1) get the MAE as low as possible, and 2) for the test and train MAE to be as close as possible. This indicates that we are not over- or under-fitting the model.
+
+However, since we are actually interested in the behaviour of the Location overall and not in the individual responses, we would also like to score the performance of the model in predicting the average response in the location. To do this, we first calculate the mean actual and predicted response for the location, then calculate the $R^2$ value for predicting across all locations. This is where our model really shines, demonstrating a high $R^2$ for predicting the location means.
+
+
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+Pleasant.results <- model.building(target="ISOPleasant", features = features, train = train, test = test, grp="LocationID", exclude.features = c("SIL3"), verbose=verbosity)
+```
 
 ## Eventful Model
 
-```{r, message=FALSE, warning=FALSE}
-Eventful.results <- model.building(target="ISOEventful", features = features, train = train, test = test, grp="LocationID")
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+Eventful.results <- model.building(target="ISOEventful", features = features, train = train, test = test, grp="LocationID", verbose=verbosity)
 ```
 
 ```{r}
@@ -265,64 +346,223 @@ sjPlot::plot_models(Pleasant.results$scaled.model, Eventful.results$scaled.model
 
 ```
 
-## Natural Model
+## Logistic models
 
-```{r, message=FALSE, warning=FALSE}
-Natural.results <- model.building(target="Natural", features = features, train = train, test = test, grp="LocationID")
-```
+```{r, warning=FALSE, echo=FALSE}
 
-## Traffic Model
+# Random effects feature selection!
 
-```{r, message=FALSE, warning=FALSE}
-Traffic.results <- model.building(target="Traffic", features = features, train = train, test = test, grp="LocationID", exclude.features = c("SIL3"))
-```
+logistic.rnd.model <- function(target, fix.features, rnd.features, remove.features, data, grp = "LocationID", verbose=0) {
+    if(verbose >= 1) {print(glue("Removed Features: ", paste(remove.features, collapse=", ")))}
+    
+    if (length(rnd.features) > 1) {
+        rnd.features <- grep(paste0(remove.features, collapse = "|"), rnd.features, invert=TRUE, value=TRUE)
+        rnd.features.string <- paste(rnd.features, collapse = " + ")
+        rnd.features.string <- glue(" + ", rnd.features.string) # Need to add a + in front of the list of features
+    } else {
+        rnd.features.string <- ""
+    }
+    fix.features.string <- paste(fix.features, collapse = " + ")
 
-## Human Model
+    formula <- as.formula(glue(target, " ~ 1 + ", fix.features.string, " + (1 ", rnd.features.string, "|", grp, ")"))
+    log.mod <- glmer(formula, data = data, family = binomial(link = "logit"))
+    log.mod
+}
 
-```{r, message=FALSE, warning=FALSE}
-Human.results <- model.building(target="Human", features = features, train = train, test = test, grp="LocationID")
+rnd.many.models <- function(target, fix.features, rnd.features, data, verbose=0) {
+    
+    log.mod1 <- logistic.rnd.model(target, fix.features, rnd.features, remove.features=c("none"), data=data, verbose=verbose)
+    models <- list("init"=log.mod1)
+    
+    for (feature in rnd.features) {
+        model <- logistic.rnd.model(target, fix.features, rnd.features, remove.features = c(feature), data=data, verbose=verbose)
+        models[[feature]] = model
+    }
+    compare <- compare_performance(
+        models$init, models$PA, models$N5, models$S, models$R, models$I, models$FS, models$T, models$LAeq, models$LA10_LA90, models$LC_LA, models$SIL3, metrics=c("AIC"), rank=TRUE
+    )
+    
+    results <- list("models"= models, "compare" = compare)
+    
+}
+
+rnd.reduction <- function(target, fix.features, rnd.features, data, verbose=0) {
+    rnd.reduce <- rnd.many.models(target, fix.features = fix.features, rnd.features=rnd.features, data=scale.train, verbose=verbose)
+    
+    if (verbose >= 1) {
+        print(rnd.reduce$compare)
+    }
+    
+    remove <- substr(rnd.reduce$compare$Name[1], 8, 20)
+    if (remove == "init") {
+        print("%%%%%%%  No feature selected for removal.   %%%%%%%%%%")
+        print(glue("Selected random features: ", rnd.features))
+        rnd.reduce
+        
+    } else {
+        print(glue("%%%%%%%%   Selected for Removal : ", remove, "    %%%%%%%%%%"))
+        
+        rnd.features <- grep(paste0(remove, collapse = "|"), rnd.features, invert=TRUE, value=TRUE)
+        rnd.features
+        }
+}
+
+rnd.model.sel <- function(target, features, data, verbose=0) {
+    rnd.features <- rnd.reduction(target = target, fix.features = features, rnd.features = features, data = data, verbose = verbose)
+    
+    for (i in features) {
+        if (typeof(rnd.features) == "character") {
+            rnd.features <- rnd.reduction(target = target, fix.features = features, rnd.features = rnd.features, data = data, verbose = verbose)
+        } else{break}
+    }
+    rnd.features
+}
+
+##################################################
+
+## Fixed effects feature selection!
+
+logistic.fix.model <- function(target, fix.features, rnd.features, remove.features, data, grp="LocationID", verbose=0) {
+    if(verbose >= 1) {print(glue("Removed Features: ", paste(remove.features, collapse=", ")))}
+    fix.features <- grep(paste0(remove.features, collapse = "|"), fix.features, invert=TRUE, value=TRUE)
+    fix.features.string <- paste(fix.features, collapse = " + ")
+    rnd.features.string <- paste(rnd.features, collapse = " + ")
+
+    formula <- as.formula(glue(target, " ~ 1 + ", fix.features.string, " + (1 + ", rnd.features.string, "|", grp, ")"))
+    log.mod <- glmer(formula, data = data, family = binomial(link = "logit"))
+    log.mod
+}
+
+fix.many.models <- function(target, fix.features, rnd.features, data, verbose=0) {
+    
+    log.mod1 <- logistic.fix.model(target, fix.features, rnd.features, remove.features=c("none"), data=data, verbose=verbose)
+    models <- list("init"=log.mod1)
+    
+    for (feature in fix.features) {
+        model <- logistic.fix.model(target, fix.features, rnd.features, remove.features = c(feature), data=data, verbose=verbose)
+        models[[feature]] = model
+    }
+    compare <- compare_performance(
+        models$init, models$PA, models$N5, models$S, models$R, models$I, models$FS, models$T, models$LAeq, models$LA10_LA90, models$LC_LA, models$SIL3, metrics=c("AIC"), rank=TRUE
+    )
+    
+    results <- list("models"= models, "compare" = compare)
+    
+}
+
+fix.reduction <- function(target, fix.features, rnd.features, data, verbose=0) {
+    fix.reduce <- fix.many.models(target, fix.features = fix.features, rnd.features=rnd.features, data=scale.train, verbose=verbose)
+    
+    if (verbose >= 1) {
+        print(fix.reduce$compare)
+    }
+    
+    remove <- substr(fix.reduce$compare$Name[1], 8, 20)
+    if (remove == "init") {
+        print("%%%%%%%  No feature selected for removal.   %%%%%%%%%%")
+        print(glue("Selected fixed features: ", paste(fix.features, collapse=", ")))
+        fix.reduce
+        
+    } else {
+        print(glue("%%%%%%%%   Selected for Removal : ", remove, "    %%%%%%%%%%"))
+        
+        fix.features <- grep(paste0(remove, collapse = "|"), fix.features, invert=TRUE, value=TRUE)
+        fix.features
+        }
+}
+
+fix.model.sel <- function(target, fix.features, rnd.features, data, verbose=0) {
+    fix.features <- fix.reduction(target = target, fix.features = fix.features, rnd.features = rnd.features, data = data, verbose = verbose)
+    
+    for (i in fix.features) {
+        if (typeof(fix.features) == "character") {
+            fix.features <- fix.reduction(target = target, fix.features = fix.features, rnd.features = rnd.features, data = data, verbose = verbose)
+        } else{break}
+    }
+    fix.features
+}
+
 ```
 
 ```{r}
-sjPlot::tab_model(Natural.results$model, Traffic.results$model, Human.results$model)
-sjPlot::tab_model(Natural.results$scaled.model, Traffic.results$scaled.model, Human.results$scaled.model)
-sjPlot::plot_models(Natural.results$model, Traffic.results$model, Human.results$model, std.est='std', show.values=TRUE)
+scale.train <- train
+scale.train[c(features)] <- scale(scale.train[c(features)])
 
 ```
 
-##### Tried an attempt at Cross-validation -> not successful
+### Natural Model
 
-### 5-fold CV
+```{r, warning=FALSE, cache=TRUE}
+nat.rnd.features <- rnd.model.sel(target="Natural", features = features, data=scale.train, verbose=verbosity)
+```
+
+Selected LA10_LA90 for random effects
+
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+nat.fix.features <- fix.model.sel(target="Natural", fix.features = features, rnd.features = c("LA10_LA90"), verbose=verbosity)
+```
+
+```{r natural model, cache=TRUE}
+Natural.mod <- glmer(Natural ~  1+ S + LAeq + LC_LA + (1 + LA10_LA90 | LocationID), data = scale.train, family = binomial(link = "logit"))
+summary(Natural.mod)
+```
+
+### Traffic Model
+
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+trf.rnd.features <- rnd.model.sel(target="Traffic", features = features, data=scale.train, verbose=verbosity)
+```
+
+Selected LA10_LA90 for random effects
+
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+trf.fix.features <- fix.model.sel(target = "Traffic", fix.features = features, rnd.features = c("LA10_LA90"), verbose=verbosity)
+
+```
+Selected R, LAeq for fixed effects
+
+```{r traffic model, cache=TRUE, message=FALSE}
+Traffic.mod <- glmer(Traffic ~ 1 + R + LAeq + (1 + LA10_LA90 | LocationID), data = scale.train, family = binomial(link = "logit"))
+summary(Traffic.mod)
+```
+
+### Human Model
+
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+hmn.rnd.features <- rnd.model.sel(target="Human", features = features, data=scale.train, verbose=verbosity)
+```
+Selected LC_LA for random effects
+
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+hmn.fix.features <- fix.model.sel(target = "Human", fix.features = features, rnd.features = c("LC_LA"), verbose=verbosity)
+
+```
+
+Selected N5, T, LAeq, LC_LA for fixed effects
+
+```{r human model, cache=TRUE, message=FALSE}
+Human.mod <- glmer(Human ~ 1 + N5 + T + LAeq + LC_LA + (1 + LC_LA | LocationID), data = scale.train, family = binomial(link = "logit"))
+summary(Human.mod)
+```
 
 ```{r}
-# set.seed(42)
-# 
-# Pleasant_formula <- as.formula(glue("ISOPleasant ~ 1 + ", feature_string, " + (1 + ", feature_string, "|LocationID)"))
-# # init_Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = train)
-# 
-# prelockdownData$ID <- c(1:nrow(prelockdownData))
-# 
-# # confusion_matrices <- list()
-# models <- list()
-# accuracy <- c()
-# 
-# for (i in c(1:5)) {
-#     # creating 5 random folds from the cancer data set
-#     folds <- caret::createFolds(prelockdownData$ISOPleasant, k=5)
-#     
-#     # Splitting the data into training and testing
-#     test <- prelockdownData[prelockdownData$ID %in% folds[[i]], ]
-#     train <- prelockdownData[prelockdownData$ID %in% unlist(folds[-i]), ]
-#     
-#     # feature selection using lmerTest::step
-#     init_Pleasant_model <- lmerTest::lmer(Pleasant_formula, data = train)
-#     step_model <- lmerTest::step(init_Pleasant_model, data=train, reduce.random=TRUE)
-#     step_model <- get_model(step_model)
-#     
-#     models[[i]] <- step_model
-#     accuracy[[i]] <- cAIC4::cAIC(step_model)
-#     
-# }
+sjPlot::tab_model(Natural.mod, Traffic.mod, Human.mod)
+# sjPlot::tab_model(Natural.results$scaled.model, Traffic.results$scaled.model, Human.results$scaled.model)
+sjPlot::plot_models(Natural.mod, Traffic.mod, Human.mod, show.values=TRUE)
+
 ```
 
+
+
+## Lockdown Predictions
+
+```{r, warning=FALSE}
+lockdownData$ISOPleasant <- predict(Pleasant.results$model, newdata=lockdownData)
+lockdownData$ISOEventful <- predict(Eventful.results$model, newdata=lockdownData)
+lockdownData$Natural <- predict(Natural.results$model, newdata=lockdownData)
+lockdownData$Human <- predict(Human.results$model, newdata=lockdownData)
+lockdownData$Traffic <- predict(Traffic.results$model, newdata=lockdownData)
+print(head(lockdownData))
+write.csv(lockdownData, glue("Predicted Lockdown Data_", Sys.Date(), ".csv"), row.names = FALSE)
+```
 
