@@ -140,7 +140,7 @@ All predictors are numeric values, in the units described earlier. Before conduc
 data <- data %>% mutate_at(vars(GroupID, LocationID, Lockdown), funs(as.factor))
 data <- data %>% mutate_at(vars(Traffic, Human, Natural), funs(factor), order=TRUE)
 data <- data %>% mutate_at(vars(c("ISOPleasant", "ISOEventful", features)), funs(as.numeric))
-data <- data %>% filter(!if_any(c(PA, N5, S, R, I, FS, T, LAeq, LA10_LA90, LC_LA, SIL3), is.na))
+data <- data %>% filter(!if_any(c(ISOPleasant, ISOEventful, PA, N5, S, R, I, FS, T, LAeq, LA10_LA90, LC_LA, SIL3), is.na))
 
 kable(head(data))
 ```
@@ -150,7 +150,7 @@ kable(head(data))
 ```{r correlations, warning=FALSE}
 library(correlation)
 
-corrs <- correlation::correlation(data[features], multilevel=FALSE)
+corrs <- correlation::correlation(data[c(features, "LocationID")], multilevel=FALSE)
 s <- summary(corrs)
 s
 ```
@@ -225,6 +225,9 @@ model.building <- function(target, features, train, test, grp="LocationID", excl
 
     # kable(vif(model))
     
+    results <- list("step.results" = step.model, "model" = model, "scaled.model"=scaled.model)
+
+    
     if (plot) {
         # print(tab_model(model, show.icc=TRUE, collapse.ci=TRUE, show.aic=TRUE))
         print(plot_model(scaled.model, type="re", title=glue("Random effects - ", target), show.values=TRUE))
@@ -236,31 +239,32 @@ model.building <- function(target, features, train, test, grp="LocationID", excl
         # Generating predictions and evaluating for training and test set
         pred.results <- pred.plots(model, target, train.data, test.data, grp=grp)
         
+        results[["pred.results"]] = pred.results
+        
+        means <- location.score(results, print=print.loc.means)
+        results[["train.means"]] = means$train.means
+        results[["test.means"]] = means$test.means
+        results[["train.loc.mae"]] = means$train.loc.mae
+        results[["train.loc.r2"]] = means$train.loc.r2
+        results[["test.loc.mae"]] = means$test.loc.mae
+        results[["test.loc.r2"]] = means$test.loc.r2
+        
     }
-    
-    results <- list("step.results" = step.model, "model" = model, "pred.results"= pred.results, "scaled.model"=scaled.model)
-    means <- location.score(results, print=print.loc.means)
-    results[["train.means"]] = means$train.means
-    results[["test.means"]] = means$test.means
-    results[["train.loc.mae"]] = means$train.loc.mae
-    results[["train.loc.r2"]] = means$train.loc.r2
-    results[["test.loc.mae"]] = means$test.loc.mae
-    results[["test.loc.r2"]] = means$test.loc.r2
     
     results
 }
 
-pred.plots <- function(model, target, train.data, test.data, grp="LocationID") {
+pred.plots <- function(model, target, train, test, grp="LocationID") {
     if (!require("pacman")) install.packages("pacman")
     pacman::p_load(knitr, ModelMetrics, gridExtra, ggplot2, glue)
     
-    train.pred <- train.data[grp]
-    train.pred$actual <- train.data[target][[1]]
+    train.pred <- train[grp]
+    train.pred$actual <- train[target][[1]]
     train.pred$pred <- predict(model)
     
-    test.pred <- test.data[grp]
-    test.pred$actual <- test.data[target][[1]]
-    test.pred$pred <- predict(model, newdata=test.data)
+    test.pred <- test[grp]
+    test.pred$actual <- test[target][[1]]
+    test.pred$pred <- predict(model, newdata=test)
     
     # Calculate the normalised RMSE
     # range <- abs(max(train.pred$actual) - min(train.pred$actual))
