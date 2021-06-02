@@ -7,7 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-verbosity = 0
+verbosity = 1
 ```
 
 ## Reporting
@@ -56,14 +56,14 @@ The acoustic predictors are derived from the 30s binaural recordings taken durin
 
 -   $L_{Ceq} - L_{Aeq}$ (dB)
 
--   Speech Interference Level ($SIL3_{50}$, dB) 
+-   ~~Speech Interference Level (~~$SIL3_{50}$, dB)
 
-The (psycho)acoustic predictors investigated were selected in order to describe many aspects of the recorded sound - in particular, the goal was to move beyond a focus on sound level. Three predictors (Loudness, LAeq, and SIL3) capture various aspects of the level of the sound, with LAeq representing the most common and traditional environmental acoustic metric, Loudness providing a more complex metric of the perception of the sound level, and SIL3 representing to what degree the ambient sound interferes wit casual conversation in the public space. Sharpness and LCeq-LAeq each describe aspects of the spectral content of the sound, with Sharpness describing the degree of high-frequency content and LCeq-LAeq capturing the degree of low-frequency content. LA10-LA90 attempts to describe the variability of the sound level over the recording period, essentially representing the level difference between the foreground sound and the background sound. Psychoacoustic Annoyance is calculated according to Zwicker (1999), as an empirically derived function of Loudness ($N_5$), Sharpness, Fluctuation Strength, and Roughness. 
+The (psycho)acoustic predictors investigated were selected in order to describe many aspects of the recorded sound - in particular, the goal was to move beyond a focus on sound level. Three predictors (Loudness, LAeq, and SIL3) capture various aspects of the level of the sound, with LAeq representing the most common and traditional environmental acoustic metric, Loudness providing a more complex metric of the perception of the sound level, and SIL3 representing to what degree the ambient sound interferes wit casual conversation in the public space. Sharpness and LCeq-LAeq each describe aspects of the spectral content of the sound, with Sharpness describing the degree of high-frequency content and LCeq-LAeq capturing the degree of low-frequency content. LA10-LA90 attempts to describe the variability of the sound level over the recording period, essentially representing the level difference between the foreground sound and the background sound. Psychoacoustic Annoyance is calculated according to Zwicker (1999), as an empirically derived function of Loudness ($N_5$), Sharpness, Fluctuation Strength, and Roughness.
 
-Each of these predictors was calculated from the 30s binaural recordings with Artemis. The maximum value from the left and right channels of the binaural recording are used, as suggested in ISO 12913-3. 
+Each of these predictors was calculated from the 30s binaural recordings with Artemis. The maximum value from the left and right channels of the binaural recording are used, as suggested in ISO 12913-3.
 
 ```{r predictors, warning=FALSE, message=FALSE}
-init_features <- c("PA(Zwicker)", "Loudness_N5(soneGF)", "Sharpness_S(acum)", "Rough_HM_R(asper)", "I_HM_I(iu)", "FS_(vacil)", "Ton_HM_Avg,arith(tuHMS)", "LAeq_L(A)(dB(SPL))", "LA10_LA90(dB(SPL))", "LCeq_LAeq(dB(SPL))", "SIL3_Avg,arith(dB(SPL))")
+init_features <- c("PA(Zwicker)", "Loudness_N5(soneGF)", "Sharpness_S(acum)", "Rough_HM_R(asper)", "I_HM_I(iu)", "FS_(vacil)", "Ton_HM_Avg,arith(tuHMS)", "LAeq_L(A)(dB(SPL))", "LA10_LA90(dB(SPL))", "LCeq_LAeq(dB(SPL))", "RA_2D_cp(cPa)")
 init_feature_string <- paste(init_features, collapse = " + ")
 init_feature_string
 ```
@@ -75,6 +75,7 @@ N/A
 ## Sample Size
 
 ### 8 Explain how the study size was arrived at.
+
 (Covered in the manuscript already)
 
 ```{r load data, message=FALSE, warning=FALSE}
@@ -99,9 +100,10 @@ data <- rename(data, "T" = "Ton_HM_Avg,arith(tuHMS)")
 data <- rename(data, "LAeq" = "LAeq_L(A)(dB(SPL))")
 data <- rename(data, "LA10_LA90" = "LA10_LA90(dB(SPL))")
 data <- rename(data, "LC_LA" = "LCeq_LAeq(dB(SPL))")
-data <- rename(data, "SIL3" = "SIL3_Avg,arith(dB(SPL))")
+data <- rename(data, "RA" = "RA_2D_cp(cPa)")
+# data <- rename(data, "SIL3" = "SIL3_Avg,arith(dB(SPL))")
 
-features <- c("PA", "N5", "S", "R", "I", "FS", "T", "LAeq", "LA10_LA90", "LC_LA", "SIL3")
+features <- c("PA", "N5", "S", "R", "I", "FS", "T", "LAeq", "LA10_LA90", "LC_LA", "RA")
 feature_string <- paste(features, collapse = " + ")
 feature_string
 
@@ -138,9 +140,8 @@ All predictors are numeric values, in the units described earlier. Before conduc
 
 ```{r treat features, warning=FALSE, message=FALSE}
 data <- data %>% mutate_at(vars(GroupID, LocationID, Lockdown), funs(as.factor))
-data <- data %>% mutate_at(vars(Traffic, Human, Natural), funs(factor), order=TRUE)
-data <- data %>% mutate_at(vars(c("ISOPleasant", "ISOEventful", features)), funs(as.numeric))
-data <- data %>% filter(!if_any(c(ISOPleasant, ISOEventful, PA, N5, S, R, I, FS, T, LAeq, LA10_LA90, LC_LA, SIL3), is.na))
+# data <- data %>% mutate_at(vars(Traffic, Human, Natural), funs(factor), order=TRUE)
+data <- data %>% mutate_at(vars(c("ISOPleasant", "ISOEventful", features, "Natural", "Traffic", "Human")), funs(as.numeric))
 
 kable(head(data))
 ```
@@ -159,7 +160,7 @@ s
 
 #### Multilevel Models
 
-We use two types of multilevel models for this analysis, according to the type of outcome variable. For ISOPleasant and ISOEventful, which are essentially continuous numeric variables, we use a multilevel linear regression. 
+We use two types of multilevel models for this analysis, according to the type of outcome variable. For ISOPleasant and ISOEventful, which are essentially continuous numeric variables, we use a multilevel linear regression.
 
 #### Train-test split
 
@@ -168,7 +169,9 @@ We use an 80/20 train/test split in order to evaluate the over- / under-fitting 
 ```{r, warning=FALSE, message=FALSE}
 prelockdownData <- data %>% filter(Lockdown == 0)
 lockdownData <- data %>% filter(Lockdown == 1)
-# prelockdownData <- drop_na(prelockdownData)
+lockdownData <- lockdownData %>% filter(!if_any(c(features), is.na))
+prelockdownData <- prelockdownData %>% filter(!if_any(c("ISOPleasant", "ISOEventful", features), is.na))
+
 
 # Train-test split
 library(groupdata2)
@@ -187,12 +190,13 @@ kable(summary(test))
 
 #### Feature Selection
 
-We use a forward-step feature selection process, where features are added one-by-one to the model and the best performing features are retained until no performance increase is observed. 
+We use a forward-step feature selection process, where features are added one-by-one to the model and the best performing features are retained until no performance increase is observed.
 
 ```{r, message=FALSE, warning=FALSE, echo=FALSE}
-model.building <- function(target, features, train, test, grp="LocationID", exclude.features = NULL, scale=TRUE, plot = TRUE, print.loc.means = TRUE, verbose = 0, ...) {
+library(lmerTest)
+lmer.model.building <- function(target, features, train, test, grp="LocationID", exclude.features = NULL, scale=TRUE, pred = TRUE, plot = TRUE, print.loc.means = TRUE, verbose = 0, ...) {
     if (!require("pacman")) install.packages("pacman")
-    pacman::p_load(lmerTest, glue, knitr, car, sjPlot, MuMIn, ggplot2, gridExtra, ModelMetrics)
+    pacman::p_load(glue, knitr, car, sjPlot, MuMIn, ggplot2, gridExtra, ModelMetrics)
     # Remove the excluded features from the feature vector
     if (length(exclude.features)>=1) {
         features <- grep(paste0(exclude.features, collapse = "|"), features, invert=TRUE, value=TRUE)
@@ -200,17 +204,22 @@ model.building <- function(target, features, train, test, grp="LocationID", excl
     features.string <- paste(features, collapse = " + ")
     formula <- as.formula(glue(target, " ~ 1 + ", features.string, " + (1 + ", features.string, "|", grp, ")"))
     
-    train.data <- train
-    test.data <- test
+    test.data <<- test
+    train.data <<- train
+
     if (scale) {
-        train.data[c(features)] <- scale(train.data[c(features)])
+        train.data[c(features)] <<- scale(train.data[c(features)])
     }
     
     # Fit initial model and run stepwise feature selection
     if (verbose > 0) {print("Fitting initial model.")}
     init.model <- lmer(formula, data=train.data)
+    if (verbose >= 2) {print(summary(init.model))}
+    
     if (verbose > 0) {print("Performing Feature Selection")}
-    step.model <- step(init.model, data=train.data, reduce.random=TRUE)
+    step.model <- step(init.model, reduce.random=TRUE)
+    if (verbose >= 2) {print(step.model)}
+    
     scaled.model <- get_model(step.model)
     formula <- formula(scaled.model)
 
@@ -228,7 +237,7 @@ model.building <- function(target, features, train, test, grp="LocationID", excl
     results <- list("step.results" = step.model, "model" = model, "scaled.model"=scaled.model)
 
     
-    if (plot) {
+    if (plot | pred) {
         # print(tab_model(model, show.icc=TRUE, collapse.ci=TRUE, show.aic=TRUE))
         print(plot_model(scaled.model, type="re", title=glue("Random effects - ", target), show.values=TRUE))
         print(plot_model(scaled.model, show.values=TRUE))
@@ -237,7 +246,7 @@ model.building <- function(target, features, train, test, grp="LocationID", excl
         print(r.squaredGLMM(model))
         
         # Generating predictions and evaluating for training and test set
-        pred.results <- pred.plots(model, target, train.data, test.data, grp=grp)
+        pred.results <- lmer.pred.plots(model, target, train.data, test.data, grp=grp, plot=plot)
         
         results[["pred.results"]] = pred.results
         
@@ -254,7 +263,7 @@ model.building <- function(target, features, train, test, grp="LocationID", excl
     results
 }
 
-pred.plots <- function(model, target, train, test, grp="LocationID") {
+lmer.pred.plots <- function(model, target, train, test, grp="LocationID", plot) {
     if (!require("pacman")) install.packages("pacman")
     pacman::p_load(knitr, ModelMetrics, gridExtra, ggplot2, glue)
     
@@ -270,24 +279,26 @@ pred.plots <- function(model, target, train, test, grp="LocationID") {
     # range <- abs(max(train.pred$actual) - min(train.pred$actual))
     train.mae <- mae(train.pred$pred, train.pred$actual)
     test.mae <- mae(test.pred$pred, test.pred$actual)
-
-    # Plot predicted vs actual
-    test.title <- glue("Test Set (MAE=", round(test.mae, 3), ")", sep="")
-    test.plot <- ggplot(test.pred, aes(x=pred, y=actual, colour=LocationID)) +
-        geom_point() +
-        geom_abline(intercept=0, slope=1) + 
-        labs(x = 'Predicted Values', y='Actual Values', title=test.title)+
-        coord_fixed() +
-        theme(legend.position="none")
     
-    train.title <- glue("Train Set (MAE=", round(train.mae, 3), ")", sep="")
-    train.plot <- ggplot(train.pred, aes(x=pred, y=actual, colour=LocationID)) +
-        geom_point() +
-        geom_abline(intercept=0, slope=1) + 
-        labs(x = 'Predicted Values', y='Actual Values', title=train.title) +
-        coord_fixed() +
-        theme(legend.position="none")
-    grid.arrange(train.plot, test.plot, nrow=1)
+    if (plot) {
+        # Plot predicted vs actual
+        test.title <- glue("Test Set (MAE=", round(test.mae, 3), ")", sep="")
+        test.plot <- ggplot(test.pred, aes(x=pred, y=actual, colour=LocationID)) +
+            geom_point() +
+            geom_abline(intercept=0, slope=1) + 
+            labs(x = 'Predicted Values', y='Actual Values', title=test.title)+
+            coord_fixed() +
+            theme(legend.position="none")
+        
+        train.title <- glue("Train Set (MAE=", round(train.mae, 3), ")", sep="")
+        train.plot <- ggplot(train.pred, aes(x=pred, y=actual, colour=LocationID)) +
+            geom_point() +
+            geom_abline(intercept=0, slope=1) + 
+            labs(x = 'Predicted Values', y='Actual Values', title=train.title) +
+            coord_fixed() +
+            theme(legend.position="none")
+        grid.arrange(train.plot, test.plot, nrow=1)
+    }
     
     results <- list("train.pred" = train.pred, "test.pred" = test.pred, "test.mae" = test.mae, "train.mae" = train.mae)
 }
@@ -329,9 +340,9 @@ location.score <- function(model.results, print=TRUE) {
 
 ```
 
-
 ## Pleasant Model
-When this feature selection is performed with the entire feature set, it includes both LAeq and SIL3 at the end, which have a VIF > 10. Therefore, we remove one of them (LAeq) at the start before the feature selection is performed. 
+
+When this feature selection is performed with the entire feature set, it includes both LAeq and SIL3 at the end, which have a VIF \> 10. Therefore, we remove one of them (LAeq) at the start before the feature selection is performed.
 
 ### Scores
 
@@ -339,15 +350,163 @@ To score the performance of the training and testing sets, we use the Mean Absol
 
 However, since we are actually interested in the behaviour of the Location overall and not in the individual responses, we would also like to score the performance of the model in predicting the average response in the location. To do this, we first calculate the mean actual and predicted response for the location, then calculate the $R^2$ value for predicting across all locations. This is where our model really shines, demonstrating a high $R^2$ for predicting the location means.
 
-
-```{r, message=FALSE, warning=FALSE, cache=FALSE}
-Pleasant.results <- model.building(target="ISOPleasant", features = features, train = train, test = test, grp="LocationID", exclude.features = c("SIL3"), verbose=verbosity)
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+Pleasant.results <- lmer.model.building(target="ISOPleasant", features = features, train = train, test = test, grp="LocationID", verbose=verbosity, pred=TRUE, plot=TRUE)
 ```
 
 ## Eventful Model
 
-```{r, message=FALSE, warning=FALSE, cache=FALSE}
-Eventful.results <- model.building(target="ISOEventful", features = features, train = train, test = test, grp="LocationID", verbose=verbosity)
+When running the Linear Mixed Effects model feature reduction, it turns out that LocationID is not selected as a random effect! We therefore instead build the ISOEventful model as a standard linear model, with `lm()`. We also end up removing N5 due to multi collinearity (VIF) issues.
+
+```{r, echo=FALSE}
+lm.model.building <- function(target, features, train, test, exclude.features = NULL, scale=TRUE, pred = TRUE, plot = TRUE, print.loc.means = TRUE, verbose = 0, ...) {
+    if (!require("pacman")) install.packages("pacman")
+    pacman::p_load(glue, knitr, car, sjPlot, MuMIn, ggplot2, gridExtra, ModelMetrics)
+    # Remove the excluded features from the feature vector
+    if (length(exclude.features)>=1) {
+        features <- grep(paste0(exclude.features, collapse = "|"), features, invert=TRUE, value=TRUE)
+    }
+    features.string <- paste(features, collapse = " + ")
+    formula <- as.formula(glue(target, " ~ 1 + ", features.string))
+    
+    test.data <<- test
+    train.data <<- train
+
+    if (scale) {
+        train.data[c(features)] <<- scale(train.data[c(features)])
+    }
+    
+    # Fit initial model and run stepwise feature selection
+    if (verbose > 0) {print("Fitting initial model.")}
+    init.model <- lm(formula, data=train.data)
+    if (verbose >= 2) {print(summary(init.model))}
+    
+    if (verbose > 0) {print("Performing Feature Selection")}
+    step.model <- step(init.model)
+    if (verbose >= 2) {print(step.model)}
+    
+    scaled.model <- step.model
+    formula <- formula(scaled.model)
+
+    if (verbose > 0) {print("Fitting Final Model")}
+    model <- lm(formula, data=train)
+    
+    if (verbose > 1) {
+        print(summary(model))
+    }
+
+    # kable(vif(model))
+    
+    results <- list("step.results" = step.model, "model" = model, "scaled.model"=scaled.model)
+
+    
+    if (plot | pred) {
+        # print(tab_model(model, show.icc=TRUE, collapse.ci=TRUE, show.aic=TRUE))
+        print(plot_model(scaled.model, show.values=TRUE))
+        
+        print("Trained model R-squared:")
+        # print(r.squaredGLMM(model))
+        
+        # Generating predictions and evaluating for training and test set
+        pred.results <- lm.pred.plots(model, target, train.data, test.data, grp="LocationID", plot=plot)
+        
+        results[["pred.results"]] = pred.results
+        
+        means <- location.score(results, print=print.loc.means)
+        results[["train.means"]] = means$train.means
+        results[["test.means"]] = means$test.means
+        results[["train.loc.mae"]] = means$train.loc.mae
+        results[["train.loc.r2"]] = means$train.loc.r2
+        results[["test.loc.mae"]] = means$test.loc.mae
+        results[["test.loc.r2"]] = means$test.loc.r2
+        
+    }
+    
+    results
+}
+
+lm.pred.plots <- function(model, target, train, test, grp="LocationID", plot) {
+    if (!require("pacman")) install.packages("pacman")
+    pacman::p_load(knitr, ModelMetrics, gridExtra, ggplot2, glue)
+    
+    train.pred <- train[grp]
+    train.pred$actual <- train[target][[1]]
+    train.pred$pred <- predict(model)
+    
+    test.pred <- test[grp]
+    test.pred$actual <- test[target][[1]]
+    test.pred$pred <- predict(model, newdata=test)
+    
+    # Calculate the normalised RMSE
+    # range <- abs(max(train.pred$actual) - min(train.pred$actual))
+    train.mae <- mae(train.pred$pred, train.pred$actual)
+    test.mae <- mae(test.pred$pred, test.pred$actual)
+    
+    if (plot) {
+        # Plot predicted vs actual
+        test.title <- glue("Test Set (MAE=", round(test.mae, 3), ")", sep="")
+        test.plot <- ggplot(test.pred, aes(x=pred, y=actual, colour=LocationID)) +
+            geom_point() +
+            geom_abline(intercept=0, slope=1) + 
+            labs(x = 'Predicted Values', y='Actual Values', title=test.title)+
+            coord_fixed() +
+            theme(legend.position="none")
+        
+        train.title <- glue("Train Set (MAE=", round(train.mae, 3), ")", sep="")
+        train.plot <- ggplot(train.pred, aes(x=pred, y=actual, colour=LocationID)) +
+            geom_point() +
+            geom_abline(intercept=0, slope=1) + 
+            labs(x = 'Predicted Values', y='Actual Values', title=train.title) +
+            coord_fixed() +
+            theme(legend.position="none")
+        grid.arrange(train.plot, test.plot, nrow=1)
+    }
+    
+    results <- list("train.pred" = train.pred, "test.pred" = test.pred, "test.mae" = test.mae, "train.mae" = train.mae)
+}
+
+lm.location.score <- function(model.results, print=TRUE) {
+    pacman::p_load(dplyr, ModelMetrics, MLmetrics, glue)
+
+    pred.results <- model.results$pred.results
+    train.pred <- pred.results$train.pred
+    test.pred <- pred.results$test.pred
+    model <- model.results$model
+    
+    train.means <- train.pred %>% 
+        group_by(LocationID) %>%
+        summarise_at(vars(actual, pred), funs(mean(., na.rm=TRUE)))
+    test.means <- test.pred %>%
+        group_by(LocationID) %>%
+        summarise_at(vars(actual, pred), funs(mean(., na.rm=TRUE)))
+    
+    train.loc.mae <- mae(train.means$pred, train.means$actual)
+    train.loc.r2 <- R2_Score(train.means$pred, train.means$actual)
+
+    test.loc.mae <- mae(test.means$pred, test.means$actual)
+    test.loc.r2 <- R2_Score(test.means$pred, test.means$actual)
+    
+    if (print) {
+        print(glue("Train Location R^2: ", round(train.loc.r2, 3)))
+        print(glue("Test Location R^2:  ", round(test.loc.r2, 3)))
+    }
+    
+    results <- list(
+        "train.means" = train.means,
+        "test.means" = test.means,
+        "train.loc.mae" = train.loc.mae, 
+        "train.loc.r2" = train.loc.r2, 
+        "test.loc.mae" = test.loc.mae, 
+        "test.loc.r2" = test.loc.r2)
+}
+
+
+```
+
+```{r, message=FALSE, warning=FALSE, cache=TRUE}
+
+Eventful.results <- lm.model.building(target="ISOEventful", features=features, train = train, test = test, verbose=2, pred=TRUE, plot=TRUE, exclude.features = c("N5"), scale=TRUE)
+
 ```
 
 ```{r}
@@ -360,12 +519,46 @@ sjPlot::plot_models(Pleasant.results$scaled.model, Eventful.results$scaled.model
 ## Lockdown Predictions
 
 ```{r, warning=FALSE}
-# lockdownData$ISOPleasant <- predict(Pleasant.results$model, newdata=lockdownData)
-# lockdownData$ISOEventful <- predict(Eventful.results$model, newdata=lockdownData)
+lockdownData$ISOPleasant <- predict(Pleasant.results$model, newdata=lockdownData)
+lockdownData$ISOEventful <- predict(Eventful.results$model, newdata=lockdownData)
 # lockdownData$Natural <- predict(Natural.mod, newdata=lockdownData)
 # lockdownData$Human <- predict(Human.mod, newdata=lockdownData)
 # lockdownData$Traffic <- predict(Traffic.mod, newdata=lockdownData)
-# print(head(lockdownData))
-# write.csv(lockdownData, glue("Predicted Lockdown Data_", Sys.Date(), ".csv"), row.names = FALSE)
+print(head(lockdownData))
+write.csv(lockdownData, glue("Predicted Lockdown Data_", format(Sys.Date()), "_2", ".csv"), row.names = FALSE)
 ```
 
+## Sound source clustering
+
+```{r}
+library(factoextra)
+library(NbClust)
+
+ss.data <- prelockdownData[c("Natural", "Traffic", "Human")]
+ss.data <- drop_na(ss.data)
+res <- NbClust::NbClust(ss.data, method='ward.D2')
+factoextra::fviz_nbclust(res)
+
+```
+
+```{r}
+ss.data <- prelockdownData[c("Natural", "Traffic", "Human", "LocationID")]
+ss.data <- drop_na(ss.data)
+ss.summ <- aggregate(ss.data[, 1:3], list(ss.data$LocationID), mean)
+rownames(ss.summ) <- ss.summ[, 1]
+ss.summ <- ss.summ[, 2:4]
+
+nbc <- NbClust(ss.summ, method='ward.D2', max.nc=7, distance = 'manhattan')
+fviz_nbclust(nbc)
+```
+
+```{r}
+clust <- kmeans(ss.summ, centers=2)
+# plot(ss.summ, col=clust$cluster)
+fviz_cluster(clust, data=ss.summ, repel=TRUE)
+```
+
+```{r}
+res.pca <- prcomp(ss.summ, scale=TRUE)
+fviz_pca_biplot(res.pca)
+```
