@@ -1,7 +1,7 @@
 ---
 title: "2021 Version of the Multi-level Lockdown Model"
 author: "Andrew Mitchell"
-date: "05/05/2021"
+date: "03/06/2021"
 output: html_document
 ---
 
@@ -56,6 +56,8 @@ The acoustic predictors are derived from the 30s binaural recordings taken durin
 
 -   $L_{Ceq} - L_{Aeq}$ (dB)
 
+-   Relative Approach
+
 -   ~~Speech Interference Level (~~$SIL3_{50}$, dB)
 
 The (psycho)acoustic predictors investigated were selected in order to describe many aspects of the recorded sound - in particular, the goal was to move beyond a focus on sound level. Three predictors (Loudness, LAeq, and SIL3) capture various aspects of the level of the sound, with LAeq representing the most common and traditional environmental acoustic metric, Loudness providing a more complex metric of the perception of the sound level, and SIL3 representing to what degree the ambient sound interferes wit casual conversation in the public space. Sharpness and LCeq-LAeq each describe aspects of the spectral content of the sound, with Sharpness describing the degree of high-frequency content and LCeq-LAeq capturing the degree of low-frequency content. LA10-LA90 attempts to describe the variability of the sound level over the recording period, essentially representing the level difference between the foreground sound and the background sound. Psychoacoustic Annoyance is calculated according to Zwicker (1999), as an empirically derived function of Loudness ($N_5$), Sharpness, Fluctuation Strength, and Roughness.
@@ -88,7 +90,7 @@ library(dplyr)
 library(readxl)
 data <- read_excel(here("data", "2021-05-18", "SSID Europe Database V1.0.xlsx"), sheet = "Master Merge")
 data <- as_tibble(data)
-data <- data[c("GroupID", "LocationID", "Lockdown", "ISOPleasant", "ISOEventful", "Human", "Traffic", "Natural", init_features)]
+data <- data[c("GroupID", "LocationID", "Lockdown", "ISOPleasant", "ISOEventful", init_features)]
 
 data <- rename(data, "PA" = "PA(Zwicker)")
 data <- rename(data, "N5" = "Loudness_N5(soneGF)")
@@ -141,20 +143,10 @@ All predictors are numeric values, in the units described earlier. Before conduc
 ```{r treat features, warning=FALSE, message=FALSE}
 data <- data %>% mutate_at(vars(GroupID, LocationID, Lockdown), funs(as.factor))
 # data <- data %>% mutate_at(vars(Traffic, Human, Natural), funs(factor), order=TRUE)
-data <- data %>% mutate_at(vars(c("ISOPleasant", "ISOEventful", features, "Natural", "Traffic", "Human")), funs(as.numeric))
-
-kable(head(data))
+data <- data %>% mutate_at(vars(c("ISOPleasant", "ISOEventful", features)), funs(as.numeric))
+# kable(head(data))
 ```
 
-#### Internal predictors correlations
-
-```{r correlations, warning=FALSE}
-library(correlation)
-
-corrs <- correlation::correlation(data[c(features, "LocationID")], multilevel=FALSE)
-s <- summary(corrs)
-s
-```
 
 ### 10b Specify type of model, all model-building procedures (including any predictor selection), and method for internal validation.
 
@@ -166,13 +158,28 @@ We use two types of multilevel models for this analysis, according to the type o
 
 We use an 80/20 train/test split in order to evaluate the over- / under-fitting of the model. The splits are balanced within each LocationID so that we are randomly sampling from each location equally.
 
+
 ```{r, warning=FALSE, message=FALSE}
+library(performance)
+
 prelockdownData <- data %>% filter(Lockdown == 0)
 lockdownData <- data %>% filter(Lockdown == 1)
 lockdownData <- lockdownData %>% filter(!if_any(c(features), is.na))
 prelockdownData <- prelockdownData %>% filter(!if_any(c("ISOPleasant", "ISOEventful", features), is.na))
 
+```
 
+
+```{r correlations, warning=FALSE}
+library(correlation)
+
+corrs <- correlation::correlation(prelockdownData[c(features, "LocationID")], multilevel=FALSE)
+s <- summary(corrs) %>% mutate_if(is.numeric, round, digits=2)
+
+kable(s)
+```
+
+```{r}
 # Train-test split
 library(groupdata2)
 set.seed(42)
@@ -181,11 +188,6 @@ parts = partition(prelockdownData, p=0.2, cat_col="LocationID")
 
 train = parts[[2]]
 test = parts[[1]]
-kable(summary(train))
-```
-
-```{r, warning=FALSE, message=FALSE}
-kable(summary(test))
 ```
 
 #### Feature Selection
@@ -354,6 +356,12 @@ However, since we are actually interested in the behaviour of the Location overa
 Pleasant.results <- lmer.model.building(target="ISOPleasant", features = features, train = train, test = test, grp="LocationID", verbose=verbosity, pred=TRUE, plot=TRUE)
 ```
 
+#### Check model diagnostics
+
+```{r}
+sjPlot::plot_model(Pleasant.results$scaled.model, type="diag")
+```
+
 ## Eventful Model
 
 When running the Linear Mixed Effects model feature reduction, it turns out that LocationID is not selected as a random effect! We therefore instead build the ISOEventful model as a standard linear model, with `lm()`. We also end up removing N5 due to multi collinearity (VIF) issues.
@@ -505,9 +513,18 @@ lm.location.score <- function(model.results, print=TRUE) {
 
 ```{r, message=FALSE, warning=FALSE, cache=TRUE}
 
-Eventful.results <- lm.model.building(target="ISOEventful", features=features, train = train, test = test, verbose=2, pred=TRUE, plot=TRUE, exclude.features = c("N5"), scale=TRUE)
+Eventful.results <- lm.model.building(target="ISOEventful", features=features, train = train, test = test, verbose=verbosity, pred=TRUE, plot=TRUE, scale=TRUE, exclude.features = c("N5"))
 
 ```
+
+### Model diagnostics
+
+```{r}
+sjPlot::plot_model(Eventful.results$model, type="diag")
+
+```
+
+## Print models
 
 ```{r}
 sjPlot::tab_model(Pleasant.results$model, Eventful.results$model)
@@ -521,44 +538,7 @@ sjPlot::plot_models(Pleasant.results$scaled.model, Eventful.results$scaled.model
 ```{r, warning=FALSE}
 lockdownData$ISOPleasant <- predict(Pleasant.results$model, newdata=lockdownData)
 lockdownData$ISOEventful <- predict(Eventful.results$model, newdata=lockdownData)
-# lockdownData$Natural <- predict(Natural.mod, newdata=lockdownData)
-# lockdownData$Human <- predict(Human.mod, newdata=lockdownData)
-# lockdownData$Traffic <- predict(Traffic.mod, newdata=lockdownData)
+
 print(head(lockdownData))
-write.csv(lockdownData, glue("Predicted Lockdown Data_", format(Sys.Date()), "_2", ".csv"), row.names = FALSE)
-```
-
-## Sound source clustering
-
-```{r}
-library(factoextra)
-library(NbClust)
-
-ss.data <- prelockdownData[c("Natural", "Traffic", "Human")]
-ss.data <- drop_na(ss.data)
-res <- NbClust::NbClust(ss.data, method='ward.D2')
-factoextra::fviz_nbclust(res)
-
-```
-
-```{r}
-ss.data <- prelockdownData[c("Natural", "Traffic", "Human", "LocationID")]
-ss.data <- drop_na(ss.data)
-ss.summ <- aggregate(ss.data[, 1:3], list(ss.data$LocationID), mean)
-rownames(ss.summ) <- ss.summ[, 1]
-ss.summ <- ss.summ[, 2:4]
-
-nbc <- NbClust(ss.summ, method='ward.D2', max.nc=7, distance = 'manhattan')
-fviz_nbclust(nbc)
-```
-
-```{r}
-clust <- kmeans(ss.summ, centers=2)
-# plot(ss.summ, col=clust$cluster)
-fviz_cluster(clust, data=ss.summ, repel=TRUE)
-```
-
-```{r}
-res.pca <- prcomp(ss.summ, scale=TRUE)
-fviz_pca_biplot(res.pca)
+write.csv(lockdownData, glue("Predicted Lockdown Data_", format(Sys.Date()), "_1", ".csv"), row.names = FALSE)
 ```
